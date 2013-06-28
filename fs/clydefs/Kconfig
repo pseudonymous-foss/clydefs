@@ -1,0 +1,23 @@
+config CLYDEFS_FS
+	tristate "Clydefs filesystem support"
+
+	help
+	  Clydefs is the core tree implementation used in clydefs.
+
+	  Clydefs core is highly experimental. THE DISK FORMAT IS NOT YET FINALIZED.  You should 
+	  say N here unless you are interested in testing clydefs with non-critical data.
+
+	  To compile this as a module, choose M here. The
+	  module will be called clydefscore.
+
+	  If unsure, say N.
+
+config CLYDEFS_DEBUG
+	bool "Clydefs debugging support"
+	depends on CLYDEFS_FS
+	help
+	  Enable run-time debugging support for the clydefs filesystem. This may
+	  enable additional and expensive checks with negative impact on
+	  performance, or export extra information via sysfs.
+
+	  If unsure, say N.
