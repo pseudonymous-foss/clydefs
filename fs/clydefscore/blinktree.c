@@ -541,11 +541,11 @@ static __always_inline struct btn *node_split(struct tree *tree, struct btn *nod
     printk("inside node_split (is_root:%u)\n", is_root);
     CLYDE_ASSERT(tree != NULL);
     CLYDE_ASSERT(node != NULL);
+    /*'node' need to be protected from modications while we copy data from it*/
+    CLYDE_ASSERT( spin_is_locked(node->lock) );
     /*ensure splitting is only done when there's enough nodes to 
       avoid subsequent compaction*/
     CLYDE_ASSERT( node->numkeys >= (tree->k*2 + 1) );
-    /*'node' need to be protected from modications while we copy data from it*/
-    CLYDE_ASSERT( spin_is_locked(node->lock) );
 
     printk("\t\tbefore make_node (node_right points to: %p)\n", node_right);
     if (make_node(tree, &node_right, acquire_nid(), node->is_leaf))
