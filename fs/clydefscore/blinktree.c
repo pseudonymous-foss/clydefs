@@ -874,7 +874,7 @@ static __always_inline struct btn* patch_parents_children_entries(struct btn *pa
     * and the new node entry which we need to insert may potentially be distributed among two 
     * different, new nodes.  
     */
-   struct btn *nl_p, *nr_p, *pn, *cn;
+   struct btn *node_parent, *pn, *cn;
    u64 hk_nl, hk_nr;
    u8 nl_entry_ndx;
 
@@ -884,14 +884,14 @@ static __always_inline struct btn* patch_parents_children_entries(struct btn *pa
    CLYDE_ASSERT(spin_is_locked(node_right->lock));
    printk("inside patch_parents_children_entries\n\t\tbefore assignments\n");
 
-   nl_p = nr_p = NULL;
+   node_parent = NULL;
    cn = parent_start;
 
    printk("\t\tbefore grabbing first nl_p\n");
    /*find old node entry, will have old node's high key which is new node's hk*/
    while (1) {
        if (node_isparentof(cn,node_left)) { /*FIXME O(n) */
-           nl_p = cn; /*found the parent of node_left*/
+           node_parent = cn; /*found the parent of node_left*/
            break;
        }
        pn = cn;
@@ -913,34 +913,15 @@ static __always_inline struct btn* patch_parents_children_entries(struct btn *pa
    hk_nl = node_high_key(node_left);
    /*old node's high key will always be the hk of the new rightmost node, => get the hk which 
      the parent referenced the old node by.*/
-   hk_nr = node_keyof_node(cn, node_left);
+   hk_nr = node_keyof_node(node_parent, node_left);
    printk("determined high keys: nl_hk(%llu), nr_hk(%llu)\n", hk_nl, hk_nr);
 
    printk("\t\tbefore grabbing first nr_p\n");
    /*find node into which the entry for node_right needs to be inserted*/
-   while (cn != NULL) {
-       if (hk_nr <= node_high_key(cn)){
-           nr_p = cn;
-           break;
-       }
-
-       /*advance to next node*/
-       pn = cn;
-       cn = cn->sibling;
-       if (likely(cn != NULL)) {
-           NODE_LOCK(cn);
-       } else {
-           pr_warn(" (nr_p) proceded through all internal nodes until hitting the last node - should NEVER happen (rightmost node should have inf as last key)\n");
-           BUG();
-       }
-       
-       if (pn != nl_p) { /*do not release the lock if the node is the parent of nl*/
-           NODE_UNLOCK(pn);
-       }
-   }
+   
 
    printk("\t\tbefore checking if nl_p and nl_r are set\n");
-   if ( !nl_p || !nr_p ) {
+   if ( !node_parent ) {
        pr_warn("blinktree,patch_parents_children_entries: did not find 'both' parents\n");
        BUG();
    }
@@ -951,34 +932,18 @@ static __always_inline struct btn* patch_parents_children_entries(struct btn *pa
      entry for node_left is adjusted to a lower high-key. Otherwise certain keys would
      be unreachable for a moment => inconsistent tree*/
    printk("\t\tbefore patching\n");
-   node_insert_entry(nr_p, hk_nr, node_right); /*can in itself trigger a new split*/
-   nl_entry_ndx = node_indexof_node(nl_p, node_left);
-   nl_p->child_keys[nl_entry_ndx] = hk_nl; /*update nl entry's hk to reflect what's left in nl node*/
+   node_insert_entry(node_parent, hk_nr, node_right); /*can in itself trigger a new split*/
+   nl_entry_ndx = node_indexof_node(node_parent, node_left);
+   node_parent->child_keys[nl_entry_ndx] = hk_nl; /*update nl entry's hk to reflect what's left in nl node*/
 
    /*FIXME unlock order correct ? not sure about <nl,nr> or <nr,nl>*/
    printk("\t\tbefore unlocking\n");
-   if(nl_p != nr_p) NODE_UNLOCK(nl_p);
    NODE_UNLOCK(node_right);
    NODE_UNLOCK(node_left);
-
-   /*FIXME:: DBGBLOCK, REMOVE*/
-   if (nl_p == nr_p) {
-       u8 i,j;
-       struct btn *n;
-       printk("path_parents_children_entries:: nl_p == nr_p TRUE\n");
-       for (i=0; i<nl_p->numkeys; i++) {
-           n = nl_p->child_nodes[i];
-           printk("\t\tk(%llu) entries => ", nl_p->child_keys[i]);
-           for (j=0; j<n->numkeys; j++) {
-               printk("k(%llu), ", n->child_keys[j]);
-           }
-           printk("\n");
-       }
-       printk("\n");
-   }
    
-   return nr_p; /*retain lock on node and return it*/
+   return node_parent; /*retain lock on node and return it*/
 }
+
 
 /* 
  * insert entry into the tree identified by tree 
