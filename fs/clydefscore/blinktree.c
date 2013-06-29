@@ -888,10 +888,17 @@ static __always_inline struct btn* patch_parents_children_entries(struct btn *pa
    cn = parent_start;
 
    printk("\t\tbefore grabbing first nl_p\n");
+   hk_nr = node_high_key(node_right); /*temporary val, is equal to node_left's old high key*/
    /*find old node entry, will have old node's high key which is new node's hk*/
    while (1) {
-       if (node_isparentof(cn,node_left)) { /*FIXME O(n) */
-           node_parent = cn; /*found the parent of node_left*/
+       /* 
+        * old node's high key will always be at most equal to the highkey of the parent 
+        * - if the node is the rightmost leafnode, its parent entry has key TREE_MAX_KEY 
+        * - if the node is the rightmost non-leaf node of that level, its HK is TREE_MAX_KEY and its parent entry has key TREE_MAX_KEY 
+        * - if the node is not the rightmost node, whether leaf or internal, its HK is less or equal to the parent's HK 
+        */
+       if (hk_nr <= node_high_key(cn)) {
+           node_parent = cn;
            break;
        }
        pn = cn;
@@ -934,6 +941,7 @@ static __always_inline struct btn* patch_parents_children_entries(struct btn *pa
    printk("\t\tbefore patching\n");
    node_insert_entry(node_parent, hk_nr, node_right); /*can in itself trigger a new split*/
    nl_entry_ndx = node_indexof_node(node_parent, node_left);
+   smp_mb();
    node_parent->child_keys[nl_entry_ndx] = hk_nl; /*update nl entry's hk to reflect what's left in nl node*/
 
    /*FIXME unlock order correct ? not sure about <nl,nr> or <nr,nl>*/
