@@ -32,6 +32,14 @@ enum {
 	AOECCMD_FSET,
 
 	AOE_HVER = 0x10,
+
+    /*Support our vendor-specific codes*/
+    AOECMD_CREATETREE = 0xF0,   /*create a new tree*/
+    AOECMD_REMOVETREE,          /*remove a tree and all its child nodes*/
+    AOECMD_READNODE,            /*read data from an node*/
+    AOECMD_INSERTNODE,          /*create a new node with some initial data*/
+    AOECMD_UPDATENODE,          /*update the data of an existing node*/
+    AOECMD_REMOVENODE,          /*remove the node and associated data*/
 };
 
 struct aoe_hdr {
@@ -199,6 +207,23 @@ struct ktstate {
 	int (*fn) (void);
 	char *name;
 	spinlock_t *lock;
+};
+
+/** 
+ * extended bio data for the tree-based
+ * interface.
+ */ 
+struct tree_iface_data {
+    /* inspecting bi_private for bio's not created by
+       us is breaking the interface agreement. Hence
+       we use a magic value to determine if it is
+       part of our extended interface and thus intended for us.
+      --used to verify that  
+      (1) private data was attached
+      (2) ensure we do not process data not meant for us
+    */
+    u8 magic_ident; /*should be 0xf1*/
+    u8 cmd;         /*one of the vendor-specific AOECMD_* codes*/
 };
 
 int aoeblk_init(void);

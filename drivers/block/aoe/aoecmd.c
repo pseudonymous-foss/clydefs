@@ -46,6 +46,21 @@ static struct {
 
 static struct page *empty_page;
 
+/** 
+ * checks if a bio is a tree interface bio or 
+ * just a regular block interface bio. 
+ */ 
+static __always_inline struct tree_iface_data *get_tree_iface_data(struct bio *b)
+{
+	struct tree_iface_data *ti = b->bi_private;
+	if (ti != NULL && ti->magic_ident == 0xf1 ) {
+		/*bi_private assumed to be holding tree interface data*/
+		return ti;
+	} else {
+		return NULL;
+	}
+}
+
 static struct sk_buff *
 new_skb(ulong len)
 {
@@ -113,7 +128,7 @@ newtag(struct aoedev *d)
 }
 
 static u32
-aoehdr_atainit(struct aoedev *d, struct aoetgt *t, struct aoe_hdr *h)
+aoehdr_atainit(struct aoedev *d, struct aoetgt *t, struct aoe_hdr *h, u8 treeiface_cmd)
 {
 	u32 host_tag = newtag(d);
 
@@ -123,7 +138,7 @@ aoehdr_atainit(struct aoedev *d, struct aoetgt *t, struct aoe_hdr *h)
 	h->verfl = AOE_HVER;
 	h->major = cpu_to_be16(d->aoemajor);
 	h->minor = d->aoeminor;
-	h->cmd = AOECMD_ATA;
+	h->cmd = treeiface_cmd ? treeiface_cmd : AOECMD_ATA;
 	h->tag = cpu_to_be32(host_tag);
 
 	return host_tag;
@@ -317,6 +332,7 @@ ata_rw_frameinit(struct frame *f)
 	struct aoe_atahdr *ah;
 	struct sk_buff *skb;
 	char writebit, extbit;
+	struct buf *aoe_buf;
 
 	skb = f->skb;
 	h = (struct aoe_hdr *) skb_mac_header(skb);
@@ -328,7 +344,24 @@ ata_rw_frameinit(struct frame *f)
 	extbit = 0x4;
 
 	t = f->t;
-	f->tag = aoehdr_atainit(t->d, t, h);
+	aoe_buf = f->buf;
+	/*
+	ata_rw_frameinit is presently called from probe() and ata_rw_frameinit. 
+	Probe calls with a frame for which f->buf == NULL, ata_rw_init calls 
+	with an initialised buf structure. 
+	=> only user-issued bio's and of those, only bio's for which the 
+	tree interface data structure is attached will be interpreted differntly. 
+	Any other ATA command will pass through unchanged. 
+	*/
+	if (aoe_buf != NULL) {
+		struct tree_iface_data *ti;
+		if ((ti = get_tree_iface_data(aoe_buf->bio)) != NULL)
+			f->tag = aoehdr_atainit(t->d, t, h, ti->cmd);
+		else
+			f->tag = aoehdr_atainit(t->d, t, h, 0);
+	} else {
+		f->tag = aoehdr_atainit(t->d, t, h, 0);
+	}
 	fhash(f);
 	t->nout++;
 	f->waited = 0;
@@ -1246,6 +1279,9 @@ noskb:		if (buf)
 		ataid_complete(d, t, skb->data);
 		spin_unlock_irq(&d->lock);
 		break;
+	case AOECMD_READNODE:
+		pr_info("AOECMD_READNODE response received\n");
+		break;
 	default:
 		pr_info("aoe: unrecognized ata command %2.2Xh for %d.%d\n",
 			ahout->cmdstat,
@@ -1427,6 +1463,8 @@ aoecmd_ata_rsp(struct sk_buff *skb)
 	return NULL;
 }
 
+
+
 void
 aoecmd_cfg(ushort aoemajor, unsigned char aoeminor)
 {
@@ -1458,7 +1496,7 @@ aoecmd_ata_id(struct aoedev *d)
 	ah = (struct aoe_atahdr *) (h+1);
 	skb_put(skb, sizeof *h + sizeof *ah);
 	memset(h, 0, skb->len);
-	f->tag = aoehdr_atainit(d, t, h);
+	f->tag = aoehdr_atainit(d, t, h, 0);
 	fhash(f);
 	t->nout++;
 	f->waited = 0;
