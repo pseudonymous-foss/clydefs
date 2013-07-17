@@ -177,6 +177,9 @@ aoenet_rcv(struct sk_buff *skb, struct net_device *ifp, struct packet_type *pt, 
 	case AOECMD_CFG:
 		aoecmd_cfg_rsp(skb);
 		break;
+    case AOECMD_READNODE:
+        /*FIXME do something here*/
+        /*break;*/
 	default:
 		if (h->cmd >= AOECMD_VEND_MIN)
 			break;	/* don't complain about vendor commands */
