@@ -19,4 +19,6 @@ void clydefs_io_remove(u64 tid, u64 nid);
 
 void clydefs_io_update(u64 tid, u64 nid, u64 offset, u64 len, void *data);
 
+void clydefs_io_read(u64 tid, u64 nid, u64 offset, u64 len void *data);
+
 #endif //__CLYDEFS_IO_H

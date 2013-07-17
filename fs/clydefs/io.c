@@ -3,7 +3,7 @@
 #include "io.h"
 
 static struct bio_set *bio_pool = NULL;
-
+/*IDEA: mem-manage headers here in their entirety ? */
 /** 
  * initialize clydefs io subsystem. 
  * @description allocates a bioset to guarantee quick 
@@ -94,5 +94,21 @@ void clydefs_io_remove(u64 tid, u64 nid) {
  *               at the supplied offset in the node.
  */
 void clydefs_io_update(u64 tid, u64 nid, u64 offset, u64 len, void *data) {
+    return;
+}
+
+/**
+ * read node data
+ * 
+ * @param tid the id of the tree containing the node
+ * @param nid the id of the node to read from
+ * @param offset the offset within the node from which to begin reading
+ * @param len the number of bytes to read 
+ * @description reads the specified sequence of bytes from the 
+ *              node.
+ * @todo what about reading past the end, what attempting reads 
+ *       to non-existing sequences entirely.
+ */
+void clydefs_io_read(u64 tid, u64 nid, u64 offset, u64 len void *data) {
     return;
 }
