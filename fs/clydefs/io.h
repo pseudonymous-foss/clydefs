@@ -11,7 +11,7 @@ void clydefs_io_exit(void);
 
 u64 clydefs_io_create_tree(void);
 
-void clydefs_io_remove_tree(void);
+void clydefs_io_remove_tree(u64 tid);
 
 u64 clydefs_io_insert(u64 tid, u64 len, void *data);
 

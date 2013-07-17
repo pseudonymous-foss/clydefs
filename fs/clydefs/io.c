@@ -44,7 +44,7 @@ u64 clydefs_io_create_tree(void) {
  *              both the tree itself and any node(s) and their
  *              data in the process.
  */ 
-void clydefs_io_remove_tree(void) {
+void clydefs_io_remove_tree(u64 tid) {
     return;
 }
 
