@@ -145,14 +145,15 @@ aoehdr_atainit(struct aoedev *d, struct aoetgt *t, struct aoe_hdr *h, u8 treeifa
 }
 
 static inline void
-put_lba(struct aoe_atahdr *ah, sector_t lba)
+put_lba(struct aoe_datahdr *dh, sector_t lba)
 {
-	ah->lba0 = lba;
-	ah->lba1 = lba >>= 8;
-	ah->lba2 = lba >>= 8;
-	ah->lba3 = lba >>= 8;
-	ah->lba4 = lba >>= 8;
-	ah->lba5 = lba >>= 8;
+    /*FIXME: if using this fnc regardless of type- branch on type*/
+	dh->ata.lba0 = lba;
+	dh->ata.lba1 = lba >>= 8;
+	dh->ata.lba2 = lba >>= 8;
+	dh->ata.lba3 = lba >>= 8;
+	dh->ata.lba4 = lba >>= 8;
+	dh->ata.lba5 = lba >>= 8;
 }
 
 static struct aoeif *
@@ -329,15 +330,15 @@ ata_rw_frameinit(struct frame *f)
 {
 	struct aoetgt *t;
 	struct aoe_hdr *h;
-	struct aoe_atahdr *ah;
+    struct aoe_datahdr *dh;
 	struct sk_buff *skb;
 	char writebit, extbit;
 	struct buf *aoe_buf;
 
 	skb = f->skb;
 	h = (struct aoe_hdr *) skb_mac_header(skb);
-	ah = (struct aoe_atahdr *) (h + 1);
-	skb_put(skb, sizeof(*h) + sizeof(*ah));
+	dh = (struct aoe_datahdr *) (h + 1);
+	skb_put(skb, sizeof(*h) + sizeof(*dh));
 	memset(h, 0, skb->len);
 
 	writebit = 0x10;
@@ -370,18 +371,18 @@ ata_rw_frameinit(struct frame *f)
 		f->lba = f->buf->sector;
 
 	/* set up ata header */
-	ah->scnt = f->bcnt >> 9;
-	put_lba(ah, f->lba);
+	dh->ata.scnt = f->bcnt >> 9;
+	put_lba(dh, f->lba);
 	if (t->d->flags & DEVFL_EXT) {
-		ah->aflags |= AOEAFL_EXT;
+		dh->ata.aflags |= AOEAFL_EXT;
 	} else {
 		extbit = 0;
-		ah->lba3 &= 0x0f;
-		ah->lba3 |= 0xe0;	/* LBA bit + obsolete 0xa0 */
+		dh->ata.lba3 &= 0x0f;
+		dh->ata.lba3 |= 0xe0;	/* LBA bit + obsolete 0xa0 */
 	}
 	if (f->buf && bio_data_dir(f->buf->bio) == WRITE) {
 		skb_fillup(skb, f->bv, f->bv_off, f->bcnt);
-		ah->aflags |= AOEAFL_WRITE;
+		dh->ata.aflags |= AOEAFL_WRITE;
 		skb->len += f->bcnt;
 		skb->data_len = f->bcnt;
 		skb->truesize += f->bcnt;
@@ -390,8 +391,8 @@ ata_rw_frameinit(struct frame *f)
 		t->rpkts++;
 		writebit = 0;
 	}
-
-	ah->cmdstat = ATA_CMD_PIO_READ | writebit | extbit;
+    
+	dh->ata.cmdstat = ATA_CMD_PIO_READ | writebit | extbit;
 	skb->dev = t->ifp->nd;
 }
 
@@ -505,7 +506,7 @@ resend(struct aoedev *d, struct frame *f)
 	struct sk_buff *skb;
 	struct sk_buff_head queue;
 	struct aoe_hdr *h;
-	struct aoe_atahdr *ah;
+	struct aoe_datahdr *dh;
 	struct aoetgt *t;
 	char buf[128];
 	u32 n;
@@ -520,7 +521,7 @@ resend(struct aoedev *d, struct frame *f)
 		return;
 	}
 	h = (struct aoe_hdr *) skb_mac_header(skb);
-	ah = (struct aoe_atahdr *) (h+1);
+	dh = (struct aoe_datahdr *) (h+1);
 
 	if (!(f->flags & FFL_PROBE)) {
 		snprintf(buf, sizeof(buf),
@@ -1207,7 +1208,7 @@ static void
 ktiocomplete(struct frame *f)
 {
 	struct aoe_hdr *hin, *hout;
-	struct aoe_atahdr *ahin, *ahout;
+    struct aoe_datahdr *dhin, *dhout;
 	struct buf *buf;
 	struct sk_buff *skb;
 	struct aoetgt *t;
@@ -1229,23 +1230,23 @@ ktiocomplete(struct frame *f)
 		goto noskb;
 
 	hout = (struct aoe_hdr *) skb_mac_header(f->skb);
-	ahout = (struct aoe_atahdr *) (hout+1);
+	dhout = (struct aoe_datahdr *) (hout+1);
 
 	hin = (struct aoe_hdr *) skb->data;
 	skb_pull(skb, sizeof(*hin));
-	ahin = (struct aoe_atahdr *) skb->data;
-	skb_pull(skb, sizeof(*ahin));
-	if (ahin->cmdstat & 0xa9) {	/* these bits cleared on success */
+	dhin = (struct aoe_datahdr *) skb->data;
+	skb_pull(skb, sizeof(*dhin));
+	if (dhin->ata.cmdstat & 0xa9) {	/* these bits cleared on success */
 		pr_err("aoe: ata error cmd=%2.2Xh stat=%2.2Xh from e%ld.%d\n",
-			ahout->cmdstat, ahin->cmdstat,
+			dhout->ata.cmdstat, dhin->ata.cmdstat,
 			d->aoemajor, d->aoeminor);
 noskb:		if (buf)
 			clear_bit(BIO_UPTODATE, &buf->bio->bi_flags);
 		goto out;
 	}
 
-	n = ahout->scnt << 9;
-	switch (ahout->cmdstat) {
+	n = dhout->ata.scnt << 9;
+	switch (dhout->ata.cmdstat) {
 	case ATA_CMD_PIO_READ:
 	case ATA_CMD_PIO_READ_EXT:
 		if (skb->len < n) {
@@ -1284,7 +1285,7 @@ noskb:		if (buf)
 		break;
 	default:
 		pr_info("aoe: unrecognized ata command %2.2Xh for %d.%d\n",
-			ahout->cmdstat,
+			dhout->ata.cmdstat,
 			be16_to_cpu(get_unaligned(&hin->major)),
 			hin->minor);
 	}
@@ -1479,7 +1480,7 @@ struct sk_buff *
 aoecmd_ata_id(struct aoedev *d)
 {
 	struct aoe_hdr *h;
-	struct aoe_atahdr *ah;
+	struct aoe_datahdr *dh;
 	struct frame *f;
 	struct sk_buff *skb;
 	struct aoetgt *t;
@@ -1493,8 +1494,8 @@ aoecmd_ata_id(struct aoedev *d)
 	/* initialize the headers & frame */
 	skb = f->skb;
 	h = (struct aoe_hdr *) skb_mac_header(skb);
-	ah = (struct aoe_atahdr *) (h+1);
-	skb_put(skb, sizeof *h + sizeof *ah);
+	dh = (struct aoe_datahdr *) (h+1);
+	skb_put(skb, sizeof *h + sizeof *dh);
 	memset(h, 0, skb->len);
 	f->tag = aoehdr_atainit(d, t, h, 0);
 	fhash(f);
@@ -1503,9 +1504,9 @@ aoecmd_ata_id(struct aoedev *d)
 	f->waited_total = 0;
 
 	/* set up ata header */
-	ah->scnt = 1;
-	ah->cmdstat = ATA_CMD_ID_ATA;
-	ah->lba3 = 0xa0;
+	dh->ata.scnt = 1;
+	dh->ata.cmdstat = ATA_CMD_ID_ATA;
+	dh->ata.lba3 = 0xa0;
 
 	skb->dev = t->ifp->nd;
 
@@ -1685,7 +1686,7 @@ aoecmd_cfg_rsp(struct sk_buff *skb)
 			goto bail;
 	}
 	n = skb->dev->mtu;
-	n -= sizeof(struct aoe_hdr) + sizeof(struct aoe_atahdr);
+	n -= sizeof(struct aoe_hdr) + sizeof(struct aoe_datahdr);
 	n /= 512;
 	if (n > ch->scnt)
 		n = ch->scnt;

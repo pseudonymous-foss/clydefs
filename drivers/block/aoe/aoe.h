@@ -68,6 +68,21 @@ struct aoe_atahdr {
 	unsigned char res[2];
 };
 
+
+struct aoe_treehdr {
+    u64 tid;
+    u64 nid;
+    u64 off;
+    u64 len;
+};
+
+struct aoe_datahdr {
+    union {
+        struct aoe_atahdr ata;
+        struct aoe_treehdr tree;
+    };
+};
+
 struct aoe_cfghdr {
 	__be16 bufcnt;
 	__be16 fwver;
