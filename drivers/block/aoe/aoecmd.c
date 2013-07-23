@@ -47,6 +47,17 @@ static struct {
 static struct page *empty_page;
 
 /** 
+ * Set the command flag of the AoE header. 
+ * @param h the AoE header to modify 
+ * @param cmd_val the code indicating the AoE command 
+ */ 
+static __always_inline void
+aoehdr_set_cmd(struct aoe_hdr *h, unsigned char cmd_val)
+{
+    h->cmd = cmd_val;
+}
+
+/** 
  * checks if a bio is a tree interface bio or 
  * just a regular block interface bio. 
  */ 
@@ -128,7 +139,7 @@ newtag(struct aoedev *d)
 }
 
 static u32
-aoehdr_atainit(struct aoedev *d, struct aoetgt *t, struct aoe_hdr *h, u8 treeiface_cmd)
+aoehdr_init(struct aoedev *d, struct aoetgt *t, struct aoe_hdr *h)
 {
 	u32 host_tag = newtag(d);
 
@@ -138,7 +149,6 @@ aoehdr_atainit(struct aoedev *d, struct aoetgt *t, struct aoe_hdr *h, u8 treeifa
 	h->verfl = AOE_HVER;
 	h->major = cpu_to_be16(d->aoemajor);
 	h->minor = d->aoeminor;
-	h->cmd = treeiface_cmd ? treeiface_cmd : AOECMD_ATA;
 	h->tag = cpu_to_be32(host_tag);
 
 	return host_tag;
@@ -325,50 +335,35 @@ fhash(struct frame *f)
 	list_add_tail(&f->head, &d->factive[n]);
 }
 
-static void
-ata_rw_frameinit(struct frame *f)
+/** 
+ * Initialise the aoe_treehdr for TREE-requests. 
+ * @param f the frame for tracking the TREE-request 
+ * @note expects an already initialised frame. Call via 
+ *       data_rw_framinit unless you know what you're doing.
+ */ 
+static void 
+__tree_rw_frameinit(struct frame *f)
 {
-	struct aoetgt *t;
-	struct aoe_hdr *h;
-    struct aoe_datahdr *dh;
-	struct sk_buff *skb;
-	char writebit, extbit;
-	struct buf *aoe_buf;
+    printk(KERN_DEBUG "tree_rw_frameinit called (STUB!)\n");
+    /*FIXME: fill out*/
+}
 
-	skb = f->skb;
-	h = (struct aoe_hdr *) skb_mac_header(skb);
-	dh = (struct aoe_datahdr *) (h + 1);
-	skb_put(skb, sizeof(*h) + sizeof(*dh));
-	memset(h, 0, skb->len);
-
-	writebit = 0x10;
-	extbit = 0x4;
-
-	t = f->t;
-	aoe_buf = f->buf;
-	/*
-	ata_rw_frameinit is presently called from probe() and ata_rw_frameinit. 
-	Probe calls with a frame for which f->buf == NULL, ata_rw_init calls 
-	with an initialised buf structure. 
-	=> only user-issued bio's and of those, only bio's for which the 
-	tree interface data structure is attached will be interpreted differntly. 
-	Any other ATA command will pass through unchanged. 
-	*/
-	if (aoe_buf != NULL) {
-		struct tree_iface_data *ti;
-		if ((ti = get_tree_iface_data(aoe_buf->bio)) != NULL)
-			f->tag = aoehdr_atainit(t->d, t, h, ti->cmd);
-		else
-			f->tag = aoehdr_atainit(t->d, t, h, 0);
-	} else {
-		f->tag = aoehdr_atainit(t->d, t, h, 0);
-	}
-	fhash(f);
-	t->nout++;
-	f->waited = 0;
-	f->waited_total = 0;
-	if (f->buf)
-		f->lba = f->buf->sector;
+/** 
+ * Initialise the aoe_atahdr for ATA-requests.
+ * @param f the frame for tracking the ATA-request 
+ * @note handles both read and write ATA commands. 
+ * @note expects an already initialised frame. Call via 
+ *       data_rw_frameinit unless you know what you're doing.
+ * @description initialises the ATA header immediately following 
+ *              the AoE header with information necessary for
+ *              making the ATA request.
+ */ 
+static void
+__ata_rw_frameinit(struct frame *f, struct aoetgt *t, struct sk_buff *skb , struct aoe_datahdr *dh)
+{
+    char writebit, extbit;
+    writebit = 0x10;
+    extbit = 0x4;
 
 	/* set up ata header */
 	dh->ata.scnt = f->bcnt >> 9;
@@ -393,6 +388,57 @@ ata_rw_frameinit(struct frame *f)
 	}
     
 	dh->ata.cmdstat = ATA_CMD_PIO_READ | writebit | extbit;
+}
+
+static void
+data_rw_frameinit(struct frame *f)
+{
+	struct aoetgt *t;
+	struct aoe_hdr *h;
+    struct aoe_datahdr *dh;
+	struct sk_buff *skb;
+	struct buf *aoe_buf;
+    u8 is_tree_cmd = 0;
+    struct tree_iface_data *ti = NULL;
+
+	skb = f->skb;
+	h = (struct aoe_hdr *) skb_mac_header(skb);
+	dh = (struct aoe_datahdr *) (h + 1);
+	skb_put(skb, sizeof(*h) + sizeof(*dh));
+	memset(h, 0, skb->len);
+
+	t = f->t;
+	aoe_buf = f->buf;
+
+    f->tag = aoehdr_init(t->d, t, h);
+    /*
+	data_rw_frameinit is presently called from probe() and data_rw_frameinit. 
+	Probe calls with a frame for which f->buf == NULL, ata_rw_init calls 
+	with an initialised buf structure. 
+	=> only user-issued bio's and of those, only bio's for which the 
+	tree interface data structure is attached will be interpreted differntly. 
+	Any other ATA command will pass through unchanged. 
+	*/
+	if ((aoe_buf != NULL) && ((ti = get_tree_iface_data(aoe_buf->bio)) != NULL)) { /*associated buffer && bio was a tree cmd*/
+		is_tree_cmd = 1;
+	}
+    aoehdr_set_cmd(h, (is_tree_cmd ? ti->cmd : AOECMD_ATA));
+    
+
+	fhash(f);
+	t->nout++;
+	f->waited = 0;
+	f->waited_total = 0;
+	if (f->buf)
+		f->lba = f->buf->sector;
+
+    if(is_tree_cmd) {
+        __tree_rw_frameinit(f);
+    } else {
+        __ata_rw_frameinit(f,t,skb,dh);
+    }
+    
+        
 	skb->dev = t->ifp->nd;
 }
 
@@ -441,7 +487,7 @@ aoecmd_ata_rw(struct aoedev *d)
 	/* initialize the headers & frame */
 	f->buf = buf;
 	f->bcnt = bcnt;
-	ata_rw_frameinit(f);
+	data_rw_frameinit(f);
 
 	/* mark all tracking fields and load out */
 	buf->nframesout += 1;
@@ -674,7 +720,7 @@ probe(struct aoetgt *t)
 	f->flags |= FFL_PROBE;
 	ifrotate(t);
 	f->bcnt = t->d->maxbcnt ? t->d->maxbcnt : DEFAULTBCNT;
-	ata_rw_frameinit(f);
+	data_rw_frameinit(f);
 	skb = f->skb;
 	for (frag = 0, n = f->bcnt; n > 0; ++frag, n -= m) {
 		if (n < PAGE_SIZE)
@@ -1311,9 +1357,13 @@ out:
 	dev_kfree_skb(skb);
 }
 
-/* Enters with iocq.lock held.
- * Returns true iff responses needing processing remain.
- */
+/** 
+ * Handles completed io data packets. 
+ * @note handles at most MAXIOC requests in one go 
+ * @note enters with iocq (io completion queue) lock held 
+ * @see ktiocomplete to see how each io data packet (requst, response) is handled. 
+ * @return 1 iff further responses needing processing remain. 0 otherwise. 
+ */ 
 static int
 ktio(void)
 {
@@ -1386,7 +1436,15 @@ aoe_ktstart(struct ktstate *k)
 	return 0;
 }
 
-/* pass it off to kthreads for processing */
+/** 
+ * links the frame (containing the request/command) 
+ * to the received response socketbuffer(skb) and hands off to 
+ * ktio thread for further processing. 
+ * @param f the frame containing the original request and 
+ *    transmission timing info
+ * @param skb the socket buffer of the response 
+ * @note will wake up ktiowq in turn making ktio() kthread work 
+ */ 
 static void
 ktcomplete(struct frame *f, struct sk_buff *skb)
 {
@@ -1399,8 +1457,16 @@ ktcomplete(struct frame *f, struct sk_buff *skb)
 	wake_up(&ktiowq);
 }
 
+/** 
+ * handles responses to AoE data queries whether ATA- or 
+ * TREE-based. 
+ * @param skb the socket buffer containing the entire response 
+ *            packet.
+ * @return NULL if everything was handled, otherwise the 
+ *         socketbuffer given as argument to the function.
+ */ 
 struct sk_buff *
-aoecmd_ata_rsp(struct sk_buff *skb)
+aoecmd_data_rsp(struct sk_buff *skb)
 {
 	struct aoedev *d;
 	struct aoe_hdr *h;
@@ -1410,11 +1476,12 @@ aoecmd_ata_rsp(struct sk_buff *skb)
 	char ebuf[128];
 	u16 aoemajor;
 
+    /*ensure the response packet matches up to a known AoE device*/
 	h = (struct aoe_hdr *) skb->data;
 	aoemajor = be16_to_cpu(get_unaligned(&h->major));
 	d = aoedev_by_aoeaddr(aoemajor, h->minor, 0);
 	if (d == NULL) {
-		snprintf(ebuf, sizeof ebuf, "aoecmd_ata_rsp: ata response "
+		snprintf(ebuf, sizeof ebuf, "aoecmd_data_rsp: data response "
 			"for unknown device %d.%d\n",
 			aoemajor, h->minor);
 		aoechr_error(ebuf);
@@ -1423,6 +1490,8 @@ aoecmd_ata_rsp(struct sk_buff *skb)
 
 	spin_lock_irqsave(&d->lock, flags);
 
+    /*get the frame containing the original outgoing socketbuffer 
+    (request) by the tag of the response packet*/
 	n = be32_to_cpu(get_unaligned(&h->tag));
 	f = getframe(d, n);
 	if (f) {
@@ -1454,7 +1523,8 @@ aoecmd_ata_rsp(struct sk_buff *skb)
 	aoecmd_work(d);
 
 	spin_unlock_irqrestore(&d->lock, flags);
-
+    /*hand frame (containing the original request) and the response 
+    off to ktcomplete for processing*/
 	ktcomplete(f, skb);
 
 	/*
@@ -1497,7 +1567,8 @@ aoecmd_ata_id(struct aoedev *d)
 	dh = (struct aoe_datahdr *) (h+1);
 	skb_put(skb, sizeof *h + sizeof *dh);
 	memset(h, 0, skb->len);
-	f->tag = aoehdr_atainit(d, t, h, 0);
+	f->tag = aoehdr_init(d, t, h);
+    aoehdr_set_cmd(h, AOECMD_ATA);
 	fhash(f);
 	t->nout++;
 	f->waited = 0;

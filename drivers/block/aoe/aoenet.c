@@ -172,7 +172,7 @@ aoenet_rcv(struct sk_buff *skb, struct net_device *ifp, struct packet_type *pt, 
 	switch (h->cmd) {
 	case AOECMD_ATA:
 		/* ata_rsp may keep skb for later processing or give it back */
-		skb = aoecmd_ata_rsp(skb);
+		skb = aoecmd_data_rsp(skb);
 		break;
 	case AOECMD_CFG:
 		aoecmd_cfg_rsp(skb);

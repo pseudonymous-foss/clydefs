@@ -76,6 +76,7 @@ struct aoe_treehdr {
     u64 len;
 };
 
+/*branch on AoE command value*/
 struct aoe_datahdr {
     union {
         struct aoe_atahdr ata;
@@ -252,7 +253,7 @@ void aoechr_error(char *);
 
 void aoecmd_work(struct aoedev *d);
 void aoecmd_cfg(ushort aoemajor, unsigned char aoeminor);
-struct sk_buff *aoecmd_ata_rsp(struct sk_buff *);
+struct sk_buff *aoecmd_data_rsp(struct sk_buff *);
 void aoecmd_cfg_rsp(struct sk_buff *);
 void aoecmd_sleepwork(struct work_struct *);
 void aoecmd_wreset(struct aoetgt *t);
