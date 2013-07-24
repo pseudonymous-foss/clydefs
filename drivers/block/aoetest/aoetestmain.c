@@ -17,6 +17,21 @@ MODULE_AUTHOR("Jesper Madsen <jmad@itu.dk>");
 MODULE_DESCRIPTION("AoE Test Driver, exposing a SysFS interface to test modified AoE driver");
 MODULE_VERSION(VERSION);
 
+static struct kmem_cache *tree_iface_pool = NULL;
+static struct bio_set *bio_pool = NULL;
+
+/** 
+ * extended bio data for the tree-based
+ * interface.
+ */ 
+struct tree_iface_data {
+    u8 cmd;         /*one of the vendor-specific AOECMD_* codes*/
+    u64 tid;
+    u64 nid;
+    u64 off;
+    u64 len;
+};
+
 static void aoetest_release(struct kobject *kobj);
 static struct kobj_type aoetest_ktype_device;
 
@@ -46,6 +61,148 @@ struct aoetest_sysfs_entry {
     ssize_t (*show)(struct aoedev *, char *);
 	ssize_t (*store)(struct aoedev *, const char *, size_t);
 };
+
+enum BIO_TYPE{
+    ATA_BIO,
+    TREE_BIO,
+};
+
+enum AOE_CMD {
+    /*Support our vendor-specific codes*/
+    AOECMD_CREATETREE = 0xF0,   /*create a new tree*/
+    AOECMD_REMOVETREE,          /*remove a tree and all its child nodes*/
+    AOECMD_READNODE,            /*read data from an node*/
+    AOECMD_INSERTNODE,          /*create a new node with some initial data*/
+    AOECMD_UPDATENODE,          /*update the data of an existing node*/
+    AOECMD_REMOVENODE,          /*remove the node and associated data*/
+};
+
+struct submit_syncbio_data {
+	struct completion event;
+	int error;
+};
+
+
+
+static __always_inline int is_tree_bio(struct bio *b)
+{
+    return (b->bi_treecmd != NULL);
+}
+
+static __always_inline void cleanup_if_treebio(struct bio *b)
+{
+    /*all done, cleanup time*/
+    if (is_tree_bio(b)) { 
+        kmem_cache_free(tree_iface_pool, b->bi_private);
+        b->bi_private = NULL;
+    }
+}
+
+/**
+ * Called when a sync bio is finished.
+ * @description a function which populates some fields in
+ *              preparation for the end of a synchronous bio.
+ * @param b the finished bio which was intended to be
+ *          synchronous
+ * @param error error code of bio, 0 if no error occurred.
+ */
+void submit_bio_syncio(struct bio *b, int error)
+{
+	struct submit_syncbio_data *ret = b->bi_private;
+
+	ret->error = error;
+	complete(&ret->event);
+
+    /*FIXME this is kind of stupid, just let the user manually clean up 
+      by first issuing get_bio(b), then calling cleanup_if_treebio himself*/
+    cleanup_if_treebio(b); 
+}
+
+/**
+ * Called when a bio is finished.
+ * @description bio's allocated via the alloc_bio helper method 
+ *              will have this function called when they are
+ *              finished.
+ * @param b the finished bio 
+ * @param error error code of bio, 0 if no error occurred.
+ */
+void alloc_bio_end_fnc(struct bio *b, int error)
+{
+    /*FIXME this is kind of stupid, just let the user manually clean up 
+      by first issuing get_bio(b), then calling cleanup_if_treebio himself*/
+    cleanup_if_treebio(b); 
+}
+
+/** 
+ * Allocate bios for both ATA and TREE commands. 
+ * @param bt the type of BIO desired, ATA_BIO or TREE_BIO
+ * @return NULL on allocation error, otherwise a bio. If a TREE 
+ *         bio, the bi_treecmd field points to a struct
+ *         tree_iface_data.
+ * @note it is your responsibility to call bio_put() once the 
+ *       bio is submitted and you're otherwise done with it.
+ * @note to issue a valid tree cmd, b->bi_treecmd needs 
+ *       additional data.
+ */ 
+struct bio *alloc_bio(enum BIO_TYPE bt)
+{
+    struct bio *b = NULL;
+    b = bio_alloc_bioset(GFP_KERNEL, 1, bio_pool);
+    if (!b)
+        goto err_alloc_bio;
+
+    bio_get(b); /*ensure bio won't disappear on us*/
+
+    if (bt == TREE_BIO) {
+        struct tree_iface_data *td = NULL;
+        td = kmem_cache_alloc(tree_iface_pool, GFP_KERNEL);
+        if (!td)
+            goto err_alloc_tree_iface;
+        memset(td, 0, sizeof *td);
+
+        b->bi_treecmd = td;
+
+        b->bi_sector = 0; /*using td->off to mark offsets for read/write*/
+        
+    } else {
+        b->bi_treecmd = NULL;
+    }
+
+    b->bi_end_io = &alloc_bio_end_fnc;
+
+    return b;
+
+err_alloc_tree_iface:
+    bio_put(b);
+err_alloc_bio:
+    return NULL;
+}
+
+/**
+ * Submit a bio and wait for its completion. 
+ * @description wraps submit_bio into a synchronous call, using only the bi_private field. 
+ * @param bio the bio to wait for 
+ * @param rw read/write flag, accepts REQ_* values & WRITE
+ * @return the error code of the completed bio                 
+ */ 
+int submit_bio_sync(struct bio *bio, int rw)
+{
+    struct submit_syncbio_data ret;
+
+	rw |= REQ_SYNC;
+	/*initialise queue*/
+    ret.event.done = 0;
+    init_waitqueue_head(&ret.event.wait);
+
+	bio->bi_private = &ret;
+	bio->bi_end_io = submit_bio_syncio;
+	submit_bio(rw, bio);
+	wait_for_completion(&ret.event);
+
+	return ret.error;
+}
+
+
 
 /** 
  * @param p the raw argument string 
@@ -78,10 +235,6 @@ static ssize_t aoetest_sysfs_args(char *p, char *argv[], int argv_max)
 	}
 	return argc;
 }
-
-
-
-
 
 static ssize_t __aodev_add_dev(char *dev_path , char *tag)
 {
@@ -177,7 +330,7 @@ static ssize_t __aodev_del_dev(char *tag)
     }
 
 	if (d == NULL) {
-		printk(KERN_ERR "del failed: no device by tag %s not found.\n", 
+		printk(KERN_ERR "del failed: no dekmem_tree_iface_cachevice by tag %s not found.\n", 
 			tag);
 		ret = -ENOENT;
 		goto err;
@@ -237,13 +390,40 @@ static ssize_t store_model(struct aoedev *dev, const char *page, size_t len)
 	spncpy(dev->model, page, nelem(dev->model));
 	return 0;
 } 
-*/ 
-
+*/
 static struct aoetest_sysfs_entry aoetest_sysfs_devpath = __ATTR(tag, 0644, show_devpath, NULL);
+ 
+static ssize_t show_createtree(struct aoedev *dev, char *page)
+{
+    /*create a tree, output the result*/
+    struct bio *b = NULL;
+    struct tree_iface_data *td = NULL;
+    //u64 tid = 0;
+
+    b = alloc_bio(TREE_BIO);
+    if (!b)
+        goto err_alloc;
+
+    td = (struct tree_iface_data *) b->bi_treecmd;
+    td->cmd = AOECMD_CREATETREE;
+    b->bi_bdev = dev->blkdev;
+    
+    if (submit_bio_sync(b, 0)) /*FIXME -- what do write for RW??*/
+        goto err_bio;
+    
+    return sprintf(page, "create_tree :: hole\n"); /*FIXME : how to grab the response tid ? */
+
+err_alloc:
+    return sprintf(page, "-2\n");
+err_bio:
+    return sprintf(page, "-1\n");
+}
+static struct aoetest_sysfs_entry aoetest_sysfs_createtree = __ATTR(create_tree, 0644, show_createtree, NULL);
 
 /*device-level attrs*/
 static struct attribute *aoetest_ktype_device_attrs[] = {
     &aoetest_sysfs_devpath.attr,
+    &aoetest_sysfs_createtree.attr,
     NULL,
 };
 
@@ -303,8 +483,6 @@ static struct kobj_type aoetest_ktype_device = {
 	.release		= aoetest_release, /*No-OP*/
 };
 
-
-
 static void aoetest_release(struct kobject *kobj)
 {} /*NO-OP*/
 
@@ -314,6 +492,12 @@ aoe_exit(void)
 {
     kobject_del(&aoetest_kobj);
 	kobject_put(&aoetest_kobj);
+
+    if (tree_iface_pool)
+        kmem_cache_destroy(tree_iface_pool);
+    if (bio_pool)
+        bioset_free(bio_pool);
+
 	return;
 }
 
@@ -322,7 +506,22 @@ aoe_init(void)
 {
     spin_lock_init(&lock);
     kobject_init_and_add(&aoetest_kobj, &aoetest_ktype_module, NULL, "aoetest");
+    
+    tree_iface_pool = kmem_cache_create("tree_iface_data", sizeof (struct tree_iface_data), 0, 0, NULL);
+    if (tree_iface_pool == NULL)
+        goto err_alloc_treepool;
+    
+    bio_pool = bioset_create(100, 0); /*pool_size, front_padding (if using larger structure than a bio)*/
+    if (bio_pool == NULL) {
+        goto err_alloc_biopool;
+    }
+
     return 0;
+
+err_alloc_biopool:
+    kmem_cache_destroy(tree_iface_pool);
+err_alloc_treepool:
+    return -ENOMEM;
 }
 
 module_init(aoe_init);
