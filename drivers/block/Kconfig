@@ -432,6 +432,14 @@ config ATA_OVER_ETH
 	This driver provides Support for ATA over Ethernet block
 	devices like the Coraid EtherDrive (R) Storage Blade.
 
+config ATA_OVER_ETH_TEST
+	tristate "ATA over Ethernet Test"
+	depends on ATA_OVER_ETH
+	help
+	  If enabled, creates a module which exposes a sysfs module for direct
+	  and immediate testing of both ATA and TREE commands for the modified
+	  ATA over Ethernet driver.
+
 config MG_DISK
 	tristate "mGine mflash, gflash support"
 	depends on ARM && GPIOLIB
