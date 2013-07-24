@@ -61,6 +61,7 @@ struct bio {
 
 	bio_end_io_t		*bi_end_io;
 
+    void            *bi_treecmd;
 	void			*bi_private;
 #ifdef CONFIG_BLK_CGROUP
 	/*
