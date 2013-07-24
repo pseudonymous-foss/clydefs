@@ -63,9 +63,9 @@ aoehdr_set_cmd(struct aoe_hdr *h, unsigned char cmd_val)
  */ 
 static __always_inline struct tree_iface_data *get_tree_iface_data(struct bio *b)
 {
-	struct tree_iface_data *ti = b->bi_private;
-	if (ti != NULL && ti->magic_ident == 0xf1 ) {
-		/*bi_private assumed to be holding tree interface data*/
+	struct tree_iface_data *ti = b->bi_treecmd;
+	if (ti != NULL ) {
+		/*bi_treecmd assumed to be holding tree interface data*/
 		return ti;
 	} else {
 		return NULL;

@@ -230,16 +230,11 @@ struct ktstate {
  * interface.
  */ 
 struct tree_iface_data {
-    /* inspecting bi_private for bio's not created by
-       us is breaking the interface agreement. Hence
-       we use a magic value to determine if it is
-       part of our extended interface and thus intended for us.
-      --used to verify that  
-      (1) private data was attached
-      (2) ensure we do not process data not meant for us
-    */
-    u8 magic_ident; /*should be 0xf1*/
     u8 cmd;         /*one of the vendor-specific AOECMD_* codes*/
+    u64 tid;
+    u64 nid;
+    u64 off;
+    u64 len;
 };
 
 int aoeblk_init(void);
