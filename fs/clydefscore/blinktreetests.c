@@ -16,7 +16,7 @@ extern struct tree *tree_list_head;
 struct thread_entry {
     struct task_struct *thread;
     atomic_t val;
-    u8 tree_id;
+    u64 tree_id;
 };
 
 /*
@@ -38,7 +38,7 @@ static __always_inline void init_multithread_test(
     int (*t_fnc1)(void *data), 
     int (*t_fnc2)(void *data))
 {
-    u8 tid;
+    u64 tid;
     tid = blinktree_create(2);
     TEST_ASSERT_TRUE(tid < 255, "there cannot have been made 254 existing trees since the start of this test.\n");
 
@@ -78,7 +78,7 @@ static void tear_down(void)
     /*nop*/
 }
 
-static __always_inline void ensure_all_locks_released(u8 tid, struct stack *s)
+static __always_inline void ensure_all_locks_released(u64 tid, struct stack *s)
 {
     int i = 0;
     struct btn *n;
@@ -93,14 +93,15 @@ static __always_inline void ensure_all_locks_released(u8 tid, struct stack *s)
 
 static void test_blinktree_create(void)
 {
-    u8 id, counter=0;
+    u64 id;
+    u8 counter=0;
     struct tree *p;
     printk("test_blinktree_create\n");
 
     id = blinktree_create(2);
-    TEST_ASSERT_EQUAL_U8(1, id, "expected first tree to be of id 1\n");
+    TEST_ASSERT_EQUAL_U64(1, id, "expected first tree to be of id 1\n");
     id = blinktree_create(2);
-    TEST_ASSERT_EQUAL_U8(2, id, "expected second tree to be of id 2\n");
+    TEST_ASSERT_EQUAL_U64(2, id, "expected second tree to be of id 2\n");
 
     p = tree_list_head;
     while(p != NULL){
@@ -120,10 +121,10 @@ static void test_blinktree_create(void)
 static void test_blinktree_insert_1(void)
 {
     struct stack node_stack;
-    u8 i,tid;
+    u64 tid;
     char data = '.';
     u64 key_order[] = {1, 2, 3};
-    u8 num_keys = 3;
+    u8 i,num_keys = 3;
 
     clydefscore_stack_init(&node_stack,5);
 
@@ -152,7 +153,8 @@ static void test_blinktree_insert_1(void)
 static void test_blinktree_insert_2(void)
 {
     struct stack node_stack;
-    u8 i,tid;
+    u64 tid;
+    u8 i;
     char data = '.';
     /*keys, in the order of insertion*/
     u64 key_order[] = {3, 1, 2};
@@ -191,8 +193,8 @@ static void test_blinktree_insert_2(void)
 static void test_blinktree_insert_3(void)
 {
     struct stack node_stack;
-    u8 i,tid;
-
+    u8 i;
+    u64 tid;
     char data = '.';
     /*keys, in the order of insertion*/
     u64 key_order[] = {1, 4, 2, 3, 5};
@@ -249,7 +251,8 @@ static void test_blinktree_insert_3(void)
 static void test_blinktree_insert_4(void)
 {
     struct stack node_stack;
-    u8 i,tid;
+    u8 i;
+    u64 tid;
     char data = '.';
     u64 key_order[] = {1, 4, 2, 3, 5, 8, 7, 6};
     u64 key_iter_order[] = {1,2,3,4,5,6,7,8};
@@ -286,7 +289,8 @@ static void test_blinktree_insert_4(void)
 static void test_blinktree_insert_5(void)
 {
     struct stack node_stack;
-    u8 i,tid;
+    u8 i;
+    u64 tid;
     char data = '.';
     u8 num_keys = 240;
 
@@ -392,7 +396,7 @@ static void test_blinktree_insert_6(void)
     
     int i;
     struct thread_entry entries[3];
-    u8 tid;
+    u64 tid;
 
     /*init 2 threads, init thread_entry 'entries', wait for threads to finish*/
     init_multithread_test(entries, test_blinktree_insert6_t1, test_blinktree_insert6_t2);
@@ -421,7 +425,7 @@ static void test_blinktree_insert_6(void)
  */
 static void test_blinktree_remove_1(void)
 {
-    u8 tid;
+    u64 tid;
     struct stack node_stack;
     char data = '.';
     u64 node_key = 1;
@@ -450,7 +454,8 @@ static void test_blinktree_remove_1(void)
 static void test_blinktree_remove_2(void)
 {
     struct stack node_stack;
-    u8 i,tid;
+    u8 i;
+    u64 tid;
     char data = '.';
     /*keys, in the order of insertion*/
     u64 key_order[] = {3, 1, 2, 7, 5, 6, 8, 4};
@@ -600,15 +605,15 @@ TestRef blinktree_tests(void)
 {
     EMB_UNIT_TESTFIXTURES(fixtures)
     {
-        /*TEST(test_blinktree_create),
+        TEST(test_blinktree_create),
         TEST(test_blinktree_insert_1),
         TEST(test_blinktree_insert_2),
         TEST(test_blinktree_insert_3),
         TEST(test_blinktree_insert_4),
-        TEST(test_blinktree_insert_5),*/
-        /*TEST(test_blinktree_insert_6),*/
-        /*TEST(test_blinktree_remove_1),
-        TEST(test_blinktree_remove_2),*/
+        TEST(test_blinktree_insert_5),
+        TEST(test_blinktree_insert_6),
+        TEST(test_blinktree_remove_1),
+        TEST(test_blinktree_remove_2),
         TEST(test_blinktree_remove_3),
     };
     EMB_UNIT_TESTCALLER(blinktreetest,"blinktreetest",set_up,tear_down, fixtures);

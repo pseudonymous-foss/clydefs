@@ -99,7 +99,7 @@ static __always_inline u64 node_high_key(struct btn *node)
  *  return:
  *      tree root
  */
-static __always_inline struct tree *get_tree(u8 tid)
+static __always_inline struct tree *get_tree(u64 tid)
 {
     struct tree *c = tree_list_head;
     while (c != NULL) {
@@ -110,7 +110,7 @@ static __always_inline struct tree *get_tree(u8 tid)
     }
 
     /*err out*/
-    pr_warn("\n\nget_tree: could not find any tree with id(%u)!\n", tid);
+    pr_warn("\n\nget_tree: could not find any tree with id(%llu)!\n", tid);
     BUG();
 }
 
@@ -120,7 +120,7 @@ static __always_inline struct tree *get_tree(u8 tid)
  * --- 
  *   precondition: hold the t_list_lock 
  */
-static __always_inline void set_tree_root(u8 tid, struct btn *new_root)
+static __always_inline void set_tree_root(u64 tid, struct btn *new_root)
 {
     struct tree *c = tree_list_head;
     for (c = tree_list_head; c != NULL; c = c->nxt) {
@@ -130,7 +130,7 @@ static __always_inline void set_tree_root(u8 tid, struct btn *new_root)
         }
     }
     /*err out*/
-    pr_warn("\n\nset_tree_root: could not find any tree with id(%u)!\n", tid);
+    pr_warn("\n\nset_tree_root: could not find any tree with id(%llu)!\n", tid);
     BUG();
 }
 
@@ -252,7 +252,7 @@ out:
  *  return:
  *      id/handle of new tree
  */
-u8 blinktree_create(u8 k)
+u64 blinktree_create(u8 k)
 {
     struct tree *t = NULL;
     struct btn *n = NULL;
@@ -962,7 +962,7 @@ static __always_inline struct btn* patch_parents_children_entries(struct btn *pa
  *      n<0: error
  *      -ENOMEM: allocation errors
  */
-int blinktree_insert(u8 tid, u64 key, void *data)
+int blinktree_insert(u64 tid, u64 key, void *data)
 {
     /*
         FIXME
@@ -1131,7 +1131,7 @@ err_stack_alloc:
  *          1: no such key
  * ---  
  */
-int blinktree_remove(u8 tid, u64 key)
+int blinktree_remove(u64 tid, u64 key)
 {
     /* 
      * Scenarios 
@@ -1225,7 +1225,7 @@ static void blinktree_print_node(struct btn *node, int depth)
  * prints the nodes of the tree sorted by
  * their key values.
  */
-void dbg_blinktree_print_inorder(u8 tid)
+void dbg_blinktree_print_inorder(u64 tid)
 {
     struct tree *tree;
     tree = get_tree(tid);
@@ -1263,7 +1263,7 @@ static void blinktree_get_node_keys(struct btn *node, struct stack *s)
  *      - stack 's' holds all the nodes such that popping the stack
  *      yields the node keys in order.
 */
-void dbg_blinktree_getkeys(u8 tid, struct stack *s)
+void dbg_blinktree_getkeys(u64 tid, struct stack *s)
 {
     struct tree *tree = get_tree(tid);
     CLYDE_ASSERT(tree != NULL);
@@ -1292,7 +1292,7 @@ static void blinktree_get_nodes(struct btn *node, struct stack *s)
  *  stack 's' holds all nodes, popping the stack yields an in-order
  *  traversal.
  */
-void dbg_blinktree_getnodes(u8 tid, struct stack *s)
+void dbg_blinktree_getnodes(u64 tid, struct stack *s)
 {
     struct tree *tree = get_tree(tid);
     CLYDE_ASSERT(tree != NULL);

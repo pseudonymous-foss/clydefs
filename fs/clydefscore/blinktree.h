@@ -43,7 +43,7 @@ struct btd{
 
 struct tree {
     /* unique identifier given to the tree */ 
-    u8 tid;
+    u64 tid;
     struct btn *root;
     /* 
      * the value of K used for this tree 
@@ -55,15 +55,15 @@ struct tree {
     struct tree *nxt;
 };
 
-u8 blinktree_create(u8 k);
-int blinktree_insert(u8 tid, u64 key, void *data);
-int blinktree_remove(u8 tid, u64 key);
+u64 blinktree_create(u8 k);
+int blinktree_insert(u64 tid, u64 key, void *data);
+int blinktree_remove(u64 tid, u64 key);
 struct btd *blinktree_lookup(struct tree *tree, u64 key);
 
 #ifdef DBG_FUNCS
-void dbg_blinktree_print_inorder(u8 tid);
-void dbg_blinktree_getkeys(u8 tid, struct stack *s);
-void dbg_blinktree_getnodes(u8 tid, struct stack *s);
+void dbg_blinktree_print_inorder(u64 tid);
+void dbg_blinktree_getkeys(u64 tid, struct stack *s);
+void dbg_blinktree_getnodes(u64 tid, struct stack *s);
 #endif //DBG_FUNCS
 
 #endif //__CLYDEFSCORE_BLINKTREE_H
