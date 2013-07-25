@@ -83,6 +83,10 @@ struct submit_syncbio_data {
 };
 
 
+static __always_inline void log_cmd(char *cmd_name)
+{
+    printk("AoETest, CMD SENT: %s\n", cmd_name);
+}
 
 static __always_inline int is_tree_bio(struct bio *b)
 {
@@ -147,7 +151,7 @@ void alloc_bio_end_fnc(struct bio *b, int error)
 struct bio *alloc_bio(enum BIO_TYPE bt)
 {
     struct bio *b = NULL;
-    b = bio_alloc_bioset(GFP_KERNEL, 1, bio_pool);
+    b = bio_alloc_bioset(GFP_ATOMIC, 1, bio_pool);
     if (!b)
         goto err_alloc_bio;
 
@@ -155,7 +159,7 @@ struct bio *alloc_bio(enum BIO_TYPE bt)
 
     if (bt == TREE_BIO) {
         struct tree_iface_data *td = NULL;
-        td = kmem_cache_alloc(tree_iface_pool, GFP_KERNEL);
+        td = kmem_cache_alloc(tree_iface_pool, GFP_ATOMIC);
         if (!td)
             goto err_alloc_tree_iface;
         memset(td, 0, sizeof *td);
@@ -236,51 +240,55 @@ static ssize_t aoetest_sysfs_args(char *p, char *argv[], int argv_max)
 	return argc;
 }
 
-static ssize_t __aodev_add_dev(char *dev_path , char *tag)
+static ssize_t __aoedev_add_dev(char *dev_path , char *tag)
 {
 	struct block_device *bd;
 	struct aoedev *d, *curr_d;
     int ret = 0;
 
-	printk("__aodev_add_dev\n");
+	printk("__aoedev_add_dev\n");
 
 	bd = blkdev_get_by_path(dev_path, FMODE_READ|FMODE_WRITE, NULL);
 	if (!bd || IS_ERR(bd)) {
 		printk(KERN_ERR "add failed: can't open block device %s: %ld\n", dev_path, PTR_ERR(bd));
 		return -ENOENT;
 	}
+    printk("found device\n");
 
 	if (get_capacity(bd->bd_disk) == 0) {
 		printk(KERN_ERR "add failed: zero sized block device.\n");
 		ret = -ENOENT;
 		goto err;
 	}
+    printk("checked capacity\n");
 
 	spin_lock(&lock);
+    printk("locked\n");
     /*Guard against adding the same device multiple times*/
     for (curr_d = devlist; curr_d; curr_d = curr_d->next) {
         if( strncmp(dev_path, curr_d->dev_path, DEV_PATH_LEN) == 0) {
+            printk("err out\n");
             spin_unlock(&lock);
             printk(KERN_ERR "device already added to AoE Test module (%s)\n", dev_path);
             ret = -EEXIST;
             goto err;
         }
     }
-
-	d = kmalloc(sizeof(struct aoedev), GFP_KERNEL);
+    printk("malloc GFP_ATOMIC\n");
+	d = kmalloc(sizeof(struct aoedev), GFP_ATOMIC);
 	if (!d) {
 		printk(KERN_ERR "add failed: kmalloc error for '%s'\n", dev_path);
 		ret = -ENOMEM;
 		goto err;
 	}
-
+    printk("memset\n");
 	memset(d, 0, sizeof(struct aoedev));
 	d->blkdev = bd;
 	strncpy(d->dev_path, dev_path, nelem(d->dev_path)-1);
     strncpy(d->tag, tag, nelem(d->tag)-1);
-	
+	printk("kobject_init_and_add\n");
 	kobject_init_and_add(&d->kobj, &aoetest_ktype_device, &aoetest_kobj, "%s", tag);
-    
+    printk("init and unlock\n");
     /*prepend dev to devlist*/
 	d->next = devlist;
 	devlist = d;
@@ -297,9 +305,13 @@ static ssize_t aoedev_store_add(struct aoedev *dev, const char *page, size_t len
 {
 	int error = 0;
 	char *argv[16];
-	char *p;
+	char *p = NULL;
 
-	p = kmalloc(len+1, GFP_KERNEL);
+	p = kmalloc(len+1, GFP_ATOMIC);
+    if (p == NULL) {
+        printk(KERN_ERR "aoedev_store_add: could not allocate memory for string buffer\n");
+        return -ENOMEM;
+    }
 	memcpy(p, page, len);
 	p[len] = '\0';
 	
@@ -307,7 +319,7 @@ static ssize_t aoedev_store_add(struct aoedev *dev, const char *page, size_t len
 		printk(KERN_ERR "bad arg count for add\n");
 		error = -EINVAL;
 	} else
-		error = __aodev_add_dev(argv[0], argv[1]); /*dev_path, tag*/
+		error = __aoedev_add_dev(argv[0], argv[1]); /*dev_path, tag*/
 
 	kfree(p);
 	return error ? error : len;
@@ -355,9 +367,13 @@ static ssize_t aoedev_store_del(struct aoedev *dev, const char *page, size_t len
 {
 	int error = 0;
 	char *argv[16];
-	char *p;
+	char *p = NULL;
 
-	p = kmalloc(len+1, GFP_KERNEL);
+	p = kmalloc(len+1, GFP_ATOMIC);
+    if (p == NULL) {
+        printk(KERN_ERR "aodev_store_del: could not allocate memory for string buffer..\n");
+        return -ENOMEM;
+    }
 	memcpy(p, page, len);
 	p[len] = '\0';
 
@@ -393,32 +409,29 @@ static ssize_t store_model(struct aoedev *dev, const char *page, size_t len)
 */
 static struct aoetest_sysfs_entry aoetest_sysfs_devpath = __ATTR(tag, 0644, show_devpath, NULL);
  
-static ssize_t show_createtree(struct aoedev *dev, char *page)
+static ssize_t store_createtree(struct aoedev *dev, const char *page, size_t len)
 {
-    /*create a tree, output the result*/
     struct bio *b = NULL;
     struct tree_iface_data *td = NULL;
     //u64 tid = 0;
+    printk("store_createtree called\n");
 
     b = alloc_bio(TREE_BIO);
     if (!b)
         goto err_alloc;
 
     td = (struct tree_iface_data *) b->bi_treecmd;
-    td->cmd = AOECMD_CREATETREE;
+    td->cmd = AOECMD_INSERTNODE;
     b->bi_bdev = dev->blkdev;
-    
-    if (submit_bio_sync(b, 0)) /*FIXME -- what do write for RW??*/
-        goto err_bio;
-    
-    return sprintf(page, "create_tree :: hole\n"); /*FIXME : how to grab the response tid ? */
+    submit_bio(0, b);
+    log_cmd("create_tree");
 
+    return len;
 err_alloc:
-    return sprintf(page, "-2\n");
-err_bio:
-    return sprintf(page, "-1\n");
+    printk("create_tree sysfs call failed\n");
+    return len;
 }
-static struct aoetest_sysfs_entry aoetest_sysfs_createtree = __ATTR(create_tree, 0644, show_createtree, NULL);
+static struct aoetest_sysfs_entry aoetest_sysfs_createtree = __ATTR(create_tree, 0644, NULL, store_createtree);
 
 /*device-level attrs*/
 static struct attribute *aoetest_ktype_device_attrs[] = {
