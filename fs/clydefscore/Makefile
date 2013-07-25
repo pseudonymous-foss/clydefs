@@ -10,7 +10,7 @@ ccflags-y += -DNO_STDIO_PRINTF
 
 obj-$(CONFIG_CLYDEFS_CORE_FS) := clydefscore.o
 
-clydefscore-y += core.o blinktree.o stack.o
+clydefscore-y += core.o blinktree.o stack.o treeinterface.o
 #test code
 clydefscore-y += test.o stacktests.o blinktreetests.o
 
