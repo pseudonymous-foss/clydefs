@@ -412,11 +412,11 @@ data_rw_frameinit(struct frame *f)
 
     f->tag = aoehdr_init(t->d, t, h);
     /*
-	data_rw_frameinit is presently called from probe() and data_rw_frameinit. 
-	Probe calls with a frame for which f->buf == NULL, ata_rw_init calls 
+	data_rw_frameinit is presently called from probe() and aoecmd_ata_rw. 
+	Probe calls with a frame for which f->buf == NULL, aoecmd_ata_rw calls 
 	with an initialised buf structure. 
 	=> only user-issued bio's and of those, only bio's for which the 
-	tree interface data structure is attached will be interpreted differntly. 
+	tree interface data structure is attached will be interpreted differently. 
 	Any other ATA command will pass through unchanged. 
 	*/
 	if ((aoe_buf != NULL) && ((ti = get_tree_iface_data(aoe_buf->bio)) != NULL)) { /*associated buffer && bio was a tree cmd*/
