@@ -342,10 +342,13 @@ fhash(struct frame *f)
  *       data_rw_framinit unless you know what you're doing.
  */ 
 static void 
-__tree_rw_frameinit(struct frame *f)
+__tree_rw_frameinit(struct frame *f, struct aoe_datahdr *dh, struct tree_iface_data *ti)
 {
-    printk(KERN_DEBUG "tree_rw_frameinit called (STUB!)\n");
-    /*FIXME: fill out*/
+    /*the tree cmd is already set by the frameinit function, set remaining fields*/
+    dh->tree.tid = ti->tid;
+    dh->tree.nid = ti->nid;
+    dh->tree.off = ti->off;
+    dh->tree.len = ti->len; /*FIXME this seems like something I should infer from the bio itself*/
 }
 
 /** 
@@ -433,7 +436,7 @@ data_rw_frameinit(struct frame *f)
 		f->lba = f->buf->sector;
 
     if(is_tree_cmd) {
-        __tree_rw_frameinit(f);
+        __tree_rw_frameinit(f,dh,ti);
     } else {
         __ata_rw_frameinit(f,t,skb,dh);
     }
