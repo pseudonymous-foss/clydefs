@@ -1,17 +1,21 @@
-/* 
- 
-*/
 #include <linux/module.h>
 
 short dodebug = 0;
 
+#ifdef DBG_FUNCS
 extern int tests_init(void);
+#else
+void tests_init(void)
+{
+    printk("ERROR! Module compiled without debugging support!\n");
+}
+#endif
 
 static int __init init_clydefscore(void)
 {
     printk(KERN_INFO "ClydeFS core loaded\n");
     if (dodebug) {
-        printk("\t->debug enabled\n");
+        printk("\t->dodebug=1\n");
         tests_init();
     }
 

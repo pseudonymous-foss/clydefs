@@ -79,6 +79,8 @@ unsigned long t_list_lock_flags;
 
 #ifdef DBG_FUNCS
 static void blinktree_print_node(struct btn *node, int depth);
+#else
+#define blinktree_print_node(x, y) ;
 #endif
 
 /* 
