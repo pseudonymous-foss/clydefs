@@ -132,9 +132,13 @@ void submit_bio_syncio(struct bio *b, int error)
  */
 void alloc_bio_end_fnc(struct bio *b, int error)
 {
+    printk("alloc_bio_end_fnc run\n");
     /*FIXME this is kind of stupid, just let the user manually clean up 
       by first issuing get_bio(b), then calling cleanup_if_treebio himself*/
-    cleanup_if_treebio(b); 
+    cleanup_if_treebio(b);
+    
+    if(b->bi_private)
+        kfree(b->bi_private); 
 }
 
 /** 
@@ -180,6 +184,24 @@ err_alloc_tree_iface:
     bio_put(b);
 err_alloc_bio:
     return NULL;
+}
+
+/**
+ * Helper method for deallocating bio's.
+ * @param b the bio to release
+ * @note only call this if you're sure releasing one more
+ *       reference will actually dealloc the bio.
+ */ 
+void dealloc_bio(struct bio *b)
+{
+    BUG_ON( atomic_read(&b->bi_cnt) != 1 );
+
+    if (b->bi_treecmd) { /*assume tree bio*/
+        kmem_cache_free(tree_iface_pool, b->bi_treecmd);
+        b->bi_treecmd = NULL;
+    }
+
+    bio_put(b);
 }
 
 /**
@@ -422,11 +444,11 @@ static ssize_t store_createtree(struct aoedev *dev, const char *page, size_t len
 
     td = (struct tree_iface_data *) b->bi_treecmd;
     /*BOGUS VALUES*/
-    td->cmd = AOECMD_INSERTNODE;
-    td->len = 1337;
+    td->cmd = AOECMD_CREATETREE;
+    td->len = 1337; /*ignored*/
     td->tid = 14;
     td->nid = 140;
-    td->off = 768;
+    td->off = 768; /*ignored*/
     b->bi_bdev = dev->blkdev;
     submit_bio(0, b);
     log_cmd("create_tree");
@@ -438,10 +460,70 @@ err_alloc:
 }
 static struct aoetest_sysfs_entry aoetest_sysfs_createtree = __ATTR(create_tree, 0644, NULL, store_createtree);
 
+static ssize_t store_insertnode(struct aoedev *dev, const char *page, size_t len)
+{
+    struct bio *b = NULL;
+    struct tree_iface_data *td = NULL;
+    struct page *p;
+    ulong bcnt, vec_off;
+    int *data = NULL;
+
+    printk("store_insertnode called\n");
+    
+    data = kmalloc(sizeof(int), GFP_ATOMIC);
+    if (!data)  {
+        printk("aoetest - insertnode: failed to allocate data field\n");
+        goto err_data_alloc;
+    }
+    /*data, simple system, two 1's followed by a sequence of zeroes, the length of which increases each time*/
+    *data = 0b11001100011000011000001100000011;
+
+    b = alloc_bio(TREE_BIO);
+    if (!b) {
+        printk("aoetest - insertnode: failed to allocate a bio\n");
+        goto err_bio_alloc;
+    }
+
+    td = (struct tree_iface_data *) b->bi_treecmd;
+    
+    td->cmd = AOECMD_INSERTNODE;
+    /*td->len  --should NOT need to populate*/
+    /*td->nid -- NOT needed for this*/
+    td->off = 100; /*begin writing the data 100 bytes into the start of the node data*/
+    
+    b->bi_private = data;
+    b->bi_bdev = dev->blkdev;
+    b->bi_end_io = alloc_bio_end_fnc;
+    b->bi_rw |= WRITE;
+
+    p = virt_to_page(data);
+    bcnt = sizeof(data);
+    vec_off = offset_in_page(data);
+
+    printk("b4 bio_add_page\n");
+    if (bio_add_page(b, p, bcnt, vec_off) < bcnt) {
+        printk(KERN_ERR "insert_node bio could not add page worth %lu bytes of data\n", bcnt);
+        goto err_page_add;
+    }
+
+    submit_bio(0, b);
+    log_cmd("insert_node");
+    return len;
+
+err_page_add:
+    dealloc_bio(b);
+err_bio_alloc:
+    kfree(data);
+err_data_alloc:
+    return len; /*err*/
+}
+static struct aoetest_sysfs_entry aoetest_sysfs_insertnode = __ATTR(insert_node, 0644, NULL, store_insertnode);
+
 /*device-level attrs*/
 static struct attribute *aoetest_ktype_device_attrs[] = {
     &aoetest_sysfs_devpath.attr,
     &aoetest_sysfs_createtree.attr,
+    &aoetest_sysfs_insertnode.attr,
     NULL,
 };
 

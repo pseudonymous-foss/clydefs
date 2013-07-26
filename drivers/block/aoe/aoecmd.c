@@ -156,8 +156,7 @@ aoehdr_init(struct aoedev *d, struct aoetgt *t, struct aoe_hdr *h)
 
 static inline void
 put_lba(struct aoe_datahdr *dh, sector_t lba)
-{
-    /*FIXME: if using this fnc regardless of type- branch on type*/
+{ /*only used when writing the LBA down into an ATA-digestible format, look at ATA hdr to understand*/
 	dh->ata.lba0 = lba;
 	dh->ata.lba1 = lba >>= 8;
 	dh->ata.lba2 = lba >>= 8;
@@ -307,6 +306,18 @@ newframe(struct aoedev *d)
 	return NULL;
 }
 
+/** 
+ * Fill socketbuffer data section with current bio data.
+ * @description copies bio data across multiple vectors into the
+ *              supplied socketbuffer's data field.
+ * @param skb the socket buffer to fill with data
+ * @param bv the bio vector list (the data source)
+ * @param off the offset within the source data with which to
+ *            start copying
+ * @param cnt the number of bytes to copy
+ * @note expects 'cnt' to be no larger than the amount remaining 
+ *       available to the resulting ethernet frame.
+ */ 
 static void
 skb_fillup(struct sk_buff *skb, struct bio_vec *bv, ulong off, ulong cnt)
 {
@@ -338,6 +349,10 @@ fhash(struct frame *f)
 /** 
  * Initialise the aoe_treehdr for TREE-requests. 
  * @param f the frame for tracking the TREE-request 
+ * @param dh the data header (which will contain the tree 
+ *           command parameters)
+ * @param ti the tree interface data struct, populated before 
+ *           issuing the bio.
  * @note expects an already initialised frame. Call via 
  *       data_rw_framinit unless you know what you're doing.
  */ 
@@ -347,8 +362,23 @@ __tree_rw_frameinit(struct frame *f, struct aoe_datahdr *dh, struct tree_iface_d
     /*the tree cmd is already set by the frameinit function, set remaining fields*/
     dh->tree.tid = ti->tid;
     dh->tree.nid = ti->nid;
-    dh->tree.off = ti->off;
-    dh->tree.len = ti->len; /*FIXME this seems like something I should infer from the bio itself*/
+
+    
+    dh->tree.off = ti->off + f->lba; /*cmd/node offset + fragment offset*/
+    if (bio_data_dir(f->buf->bio) == WRITE) {
+        printk("WRITE MODE ENGAGED\n");
+        skb_fillup(f->skb, f->bv, f->bv_off, f->bcnt);
+        f->skb->len += f->bcnt;
+        f->skb->data_len = f->bcnt;
+        f->skb->truesize += f->bcnt;
+
+        dh->tree.len = f->bcnt; /*FIXME: figure out if if this is inferable.*/
+        
+
+        f->t->wpkts++; /*another write packet out the door*/
+    } else {
+        f->t->rpkts++;
+    }
 }
 
 /** 
@@ -362,16 +392,16 @@ __tree_rw_frameinit(struct frame *f, struct aoe_datahdr *dh, struct tree_iface_d
  *              making the ATA request.
  */ 
 static void
-__ata_rw_frameinit(struct frame *f, struct aoetgt *t, struct sk_buff *skb , struct aoe_datahdr *dh)
+__ata_rw_frameinit(struct frame *f, struct aoe_datahdr *dh)
 {
     char writebit, extbit;
     writebit = 0x10;
     extbit = 0x4;
 
 	/* set up ata header */
-	dh->ata.scnt = f->bcnt >> 9;
+	dh->ata.scnt = f->bcnt >> 9; /*shifting it by 9 bits, meaning val times 512 - byte=>sector conversion*/
 	put_lba(dh, f->lba);
-	if (t->d->flags & DEVFL_EXT) {
+	if (f->t->d->flags & DEVFL_EXT) {
 		dh->ata.aflags |= AOEAFL_EXT;
 	} else {
 		extbit = 0;
@@ -379,21 +409,27 @@ __ata_rw_frameinit(struct frame *f, struct aoetgt *t, struct sk_buff *skb , stru
 		dh->ata.lba3 |= 0xe0;	/* LBA bit + obsolete 0xa0 */
 	}
 	if (f->buf && bio_data_dir(f->buf->bio) == WRITE) {
-		skb_fillup(skb, f->bv, f->bv_off, f->bcnt);
+		skb_fillup(f->skb, f->bv, f->bv_off, f->bcnt);
 		dh->ata.aflags |= AOEAFL_WRITE;
-		skb->len += f->bcnt;
-		skb->data_len = f->bcnt;
-		skb->truesize += f->bcnt;
-		t->wpkts++;
+		f->skb->len += f->bcnt;
+		f->skb->data_len = f->bcnt;
+		f->skb->truesize += f->bcnt;
+		f->t->wpkts++;
 	} else {
-		t->rpkts++;
+		f->t->rpkts++;
 		writebit = 0;
 	}
     
 	dh->ata.cmdstat = ATA_CMD_PIO_READ | writebit | extbit;
 }
 
-static void
+/** 
+ * initialize frame with header and data contents.
+ * @param f frame to be initialised
+ * @return 1 if the frame contains a tree command, 0 if the
+ *         frame is a regular ATA command.
+ */ 
+static u8
 data_rw_frameinit(struct frame *f)
 {
 	struct aoetgt *t;
@@ -438,11 +474,12 @@ data_rw_frameinit(struct frame *f)
     if(is_tree_cmd) {
         __tree_rw_frameinit(f,dh,ti);
     } else {
-        __ata_rw_frameinit(f,t,skb,dh);
+        __ata_rw_frameinit(f,dh);
     }
     
         
 	skb->dev = t->ifp->nd;
+    return is_tree_cmd;
 }
 
 static int
@@ -490,11 +527,15 @@ aoecmd_ata_rw(struct aoedev *d)
 	/* initialize the headers & frame */
 	f->buf = buf;
 	f->bcnt = bcnt;
-	data_rw_frameinit(f);
 
-	/* mark all tracking fields and load out */
-	buf->nframesout += 1;
-	buf->sector += bcnt >> 9;
+    /*initialise frame header and copy data contents*/
+	if (data_rw_frameinit(f)) { /*tree cmd*/
+        buf->sector += f->bcnt; /*byte-addressability*/
+    } else { /*ATA cmd*/
+        buf->sector += bcnt >> 9; /*sector-addressability*/
+    }
+    buf->nframesout += 1;
+
 
 	skb = skb_clone(f->skb, GFP_ATOMIC);
 	if (skb) {
