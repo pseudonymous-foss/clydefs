@@ -132,7 +132,7 @@ static void test_blinktree_insert_1(void)
     TEST_ASSERT_TRUE(tid < 255, "there cannot have been made 254 existing trees since the start of this test.\n");
 
     for(i=0; i<num_keys; i++)
-        blinktree_insert(tid, key_order[i], &data);
+        blinktree_node_insert(tid, key_order[i], &data);
 
     dbg_blinktree_getkeys(tid,&node_stack);
     TEST_ASSERT_EQUAL_U8(num_keys, clydefscore_stack_size(&node_stack), "tree did not return as many node keys as were inserted\n");
@@ -170,7 +170,7 @@ static void test_blinktree_insert_2(void)
     for(i=0; i<num_keys; i++) {
         printk("-\\-\\-\\");
         dbg_blinktree_print_inorder(tid);
-        blinktree_insert(tid, key_order[i], &data);
+        blinktree_node_insert(tid, key_order[i], &data);
     }
 
     dbg_blinktree_getkeys(tid,&node_stack);
@@ -211,7 +211,7 @@ static void test_blinktree_insert_3(void)
     for(i=0; i<num_keys-1; i++){
         printk("\tinserting '%u'\n", i);
         dbg_blinktree_print_inorder(tid);
-        blinktree_insert(tid, key_order[i], &data);
+        blinktree_node_insert(tid, key_order[i], &data);
     }
     dbg_blinktree_getnodes(tid, &node_stack);
     TEST_ASSERT_EQUAL_U8(1, 
@@ -222,7 +222,7 @@ static void test_blinktree_insert_3(void)
     clydefscore_stack_clear(&node_stack);
 
     /*insert last key, ensure split happened*/
-    blinktree_insert(tid,key_order[num_keys-1], &data); /*insert last key*/
+    blinktree_node_insert(tid,key_order[num_keys-1], &data); /*insert last key*/
     dbg_blinktree_getnodes(tid, &node_stack);
     TEST_ASSERT_EQUAL_U8(2, 
         clydefscore_stack_size(&node_stack), 
@@ -266,7 +266,7 @@ static void test_blinktree_insert_4(void)
     for(i=0; i<num_keys; i++){
         printk("--------Insert iter: %u\n",i);
         dbg_blinktree_print_inorder(tid);
-        blinktree_insert(tid, key_order[i], &data);
+        blinktree_node_insert(tid, key_order[i], &data);
     }
 
     dbg_blinktree_print_inorder(tid);
@@ -302,7 +302,7 @@ static void test_blinktree_insert_5(void)
     for(i=0; i<num_keys; i++){
         printk("--------Insert iter: %u\n",i);
         dbg_blinktree_print_inorder(tid);
-        blinktree_insert(tid, i+1, &data);
+        blinktree_node_insert(tid, i+1, &data);
     }
 
     dbg_blinktree_print_inorder(tid);
@@ -331,7 +331,7 @@ static int test_blinktree_insert6_t1(void *data)
     
     for(i=1; i<=BLINKTEST_INSERT_6_TEST_SIZE; i += 2){
         /*&i will be invalid, but it's irrelevant for the test*/
-        blinktree_insert(entries[1].tree_id, i, &i);
+        blinktree_node_insert(entries[1].tree_id, i, &i);
         if(first) {
             pr_warn("t1 inserted first element\n");
             first=0;
@@ -362,7 +362,7 @@ static int test_blinktree_insert6_t2(void *data)
     
     for(i=2; i<=BLINKTEST_INSERT_6_TEST_SIZE; i += 2){
         /*&i will be invalid, but it's irrelevant for the test*/
-        blinktree_insert(entries[2].tree_id, i, &i);
+        blinktree_node_insert(entries[2].tree_id, i, &i);
         if(first) {
             pr_warn("t2 inserted first element\n");
             first=0;
@@ -435,12 +435,12 @@ static void test_blinktree_remove_1(void)
 
     clydefscore_stack_init(&node_stack, 2);
 
-    blinktree_insert(tid,node_key,&data);
+    blinktree_node_insert(tid,node_key,&data);
     dbg_blinktree_getkeys(tid, &node_stack);
     TEST_ASSERT_EQUAL_U8(1, clydefscore_stack_size(&node_stack), "inserted one entry, expected one entry\n");
     clydefscore_stack_clear(&node_stack);
 
-    blinktree_remove(tid,node_key);
+    blinktree_node_remove(tid,node_key);
     dbg_blinktree_getkeys(tid, &node_stack);
     TEST_ASSERT_EQUAL_U8(0, clydefscore_stack_size(&node_stack), "expected to have removed the only entry in the tree\n");
 
@@ -477,7 +477,7 @@ static void test_blinktree_remove_2(void)
     TEST_ASSERT_TRUE(tid < 255, "there cannot have been made 254 existing trees since the start of this test.\n");
 
     for(i=0; i<num_keys; i++) {
-        blinktree_insert(tid, key_order[i], &data);
+        blinktree_node_insert(tid, key_order[i], &data);
     }
     dbg_blinktree_getkeys(tid,&node_stack);
     TEST_ASSERT_EQUAL_U8(num_keys, clydefscore_stack_size(&node_stack), "tree did not return as many node keys as were inserted\n");
@@ -489,9 +489,9 @@ static void test_blinktree_remove_2(void)
 
 
     /*--The actual test--*/
-    blinktree_remove(tid,8ul);
-    blinktree_remove(tid,4ul);
-    blinktree_remove(tid,2ul);
+    blinktree_node_remove(tid,8ul);
+    blinktree_node_remove(tid,4ul);
+    blinktree_node_remove(tid,2ul);
     dbg_blinktree_print_inorder(tid);
     dbg_blinktree_getkeys(tid,&node_stack);
     TEST_ASSERT_EQUAL_U8(
@@ -520,20 +520,20 @@ int test_blinktree_remove_3_t1(void *data)
     /*Insert odd elements in range [1;$test_size]*/
     for(i=1; i<=BLINKTEST_REMOVE_3_TEST_SIZE; i += 2){
         /*&i will be invalid, but it's irrelevant for the test*/
-        blinktree_insert(entries[1].tree_id, i, &i);
+        blinktree_node_insert(entries[1].tree_id, i, &i);
     }
 
     flip=1;
     /*remove every other odd element in range [1;$test_size], reverse order*/
     for(i=BLINKTEST_REMOVE_3_TEST_SIZE-1; i<1; i -= 2) {
         if (flip) {
-            blinktree_remove(entries[1].tree_id, i);
+            blinktree_node_remove(entries[1].tree_id, i);
         }
         flip = flip ? 0 : 1;
     }
     /*stopped early to avoid negative numbers in unsigned value, removing last key here*/
     if (flip) {
-        blinktree_remove(entries[1].tree_id, 1);
+        blinktree_node_remove(entries[1].tree_id, 1);
     }
 
     dbg_blinktree_print_inorder(entries[1].tree_id);
@@ -563,16 +563,16 @@ int test_blinktree_remove_3_t2(void *data)
     /*Insert even elements in range [0;$test_size], reverse order*/
     for (i=BLINKTEST_REMOVE_3_TEST_SIZE; i>=2; i-=2) {
         /*&i will be invalid, but it's irrelevant for the test*/
-        blinktree_insert(entries[2].tree_id, i, &i);
+        blinktree_node_insert(entries[2].tree_id, i, &i);
     }
     /*terminate loop early to avoid assigning neg value to unsigned variable*/
-    blinktree_insert(entries[2].tree_id, 0, &i);
+    blinktree_node_insert(entries[2].tree_id, 0, &i);
 
     flip=1;
     /*remove every other even element in range [0;$test_size]*/
     for (i=0; i<BLINKTEST_REMOVE_3_TEST_SIZE; i+=2) {
         if (flip) {
-            blinktree_remove(entries[2].tree_id,i);
+            blinktree_node_remove(entries[2].tree_id,i);
         }
         flip = flip ? 0 : 1;
     }

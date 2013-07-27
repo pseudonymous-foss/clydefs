@@ -13,7 +13,7 @@ ifneq ($(KERNELRELEASE),)
 	
 	obj-$(CONFIG_CLYDEFS_CORE_FS) := clydefscore.o
 	
-	clydefscore-y += core.o blinktree.o stack.o treeinterface.o
+	clydefscore-y += core.o blinktree.o stack.o treeinterface.o blinktreeinterface.o
 
 	#debugging build
 	ifneq ($(CONFIG_CLYDEFS_CORE_DEBUG),)
@@ -41,7 +41,6 @@ default: prep
 	$(MAKE) -C "$(KDIR)" M="$(PWD)" $(KMAK_FLAGS) modules
 
 prep:
-	echo "lolstart"
 	@test -r "$(KDIR)/.config" || { \
 		echo "error: $(KDIR) sources are not configured." 1>&2; \
 		false; \
@@ -50,7 +49,6 @@ prep:
 		echo "error: $(KDIR) sources are not prepared." 1>&2; \
 		false; \
 	}
-	echo "lolend"
 
 clean:
 	rm -rf *.o *.ko *.mod.c .tmp_versions .*.cmd modules.order

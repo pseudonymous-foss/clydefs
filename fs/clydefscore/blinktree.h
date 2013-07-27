@@ -4,6 +4,7 @@
 #include <linux/spinlock.h>
 #include "utils.h"
 #include "stack.h"
+#include "treeinterface.h"
 
 /* 
  * Tree node
@@ -28,16 +29,17 @@ struct btn{
     spinlock_t *lock;
 };
 
-/* 
- * Tree data, contains information 
- * about length(in bytes) and address of 
- * a contiguous section of memory 
- * --- 
- * num_bytes: number of bytes in this data element
- * data: ptr to start of data
+/** 
+ * Describes a single tree data block.
+ * @description describes a single tree data block.
+ *              Contains information about length
+ *              (in bytes) and address of a
+ *              contiguous section of memory.
  */
 struct btd{
-    u8 num_bytes;
+    /** number of contiguous bytes in this block. */
+    u16 num_bytes;
+    /** start of data block */ 
     u8 *data;
 };
 
@@ -56,9 +58,15 @@ struct tree {
 };
 
 u64 blinktree_create(u8 k);
-int blinktree_insert(u64 tid, u64 key, void *data);
-int blinktree_remove(u64 tid, u64 key);
-struct btd *blinktree_lookup(struct tree *tree, u64 key);
+int blinktree_remove(u64 tid);
+
+int blinktree_node_insert(u64 tid, u64 nid, void *data);
+int blinktree_node_remove(u64 tid, u64 nid);
+struct btd *blinktree_lookup(u64 tid, u64 nid);
+
+
+/*static noinline */ int data_block_alloc(struct btd **block_ref, u16 num_bytes);
+void data_block_free(struct btd *block);
 
 #ifdef DBG_FUNCS
 void dbg_blinktree_print_inorder(u64 tid);

@@ -57,7 +57,7 @@
 #define NODE_REMOVED_HK_ENTRY 1
 
 /*u64_maxval*/
-#define TREE_MAX_KEY U64_MAX_VALUE
+#define TREE_MAX_NID U64_MAX_VALUE
 #define NO_SUCH_ENTRY U8_MAX_VALUE
 
 #define NODE_LOCK(n) \
@@ -83,13 +83,14 @@ static void blinktree_print_node(struct btn *node, int depth);
 #define blinktree_print_node(x, y) ;
 #endif
 
-/* 
- * Return the node's high key (the upper bound 
- * of the subtree rooted in 'node') 
- * -- 
- * return: 
- *   node's high key 
- */
+/**
+ * Return the node's high key. 
+ * @description return the node's high key which is the 
+ *              upper bound of hte subtree rooted in
+ *              'node'.
+ * @param node whose high key is to be returned 
+ * @return the node's high key  
+ */ 
 static __always_inline u64 node_high_key(struct btn *node) 
 {
     return node->child_keys[node->numkeys-1];
@@ -211,7 +212,7 @@ alloc_err:
     return -ENOMEM;/*FIXME: remove the BUG() call and ensure users protect against failed allocations*/
 }
 
-#if 0
+
 /* 
  * Allocate a data block of a variable size of bytes 
  * --- 
@@ -222,7 +223,7 @@ alloc_err:
  *   -ENOMEM if allocation failed
  *   0 if allocation went well
  */
-static noinline int make_data(struct btd **block_ref, u8 num_bytes){
+/*static noinline */ int data_block_alloc(struct btd **block_ref, u16 num_bytes){
     CLYDE_ASSERT(block_ref != NULL);
     CLYDE_ASSERT(*block_ref == NULL); /*ensure we're not losing a ptr*/
 
@@ -246,14 +247,19 @@ err_alloc:
 out:
     return 0;
 }
-#endif 
 
-/* 
- * creates a new tree root 
- * --- 
- *  return:
- *      id/handle of new tree
- */
+void data_block_free(struct btd *block)
+{
+    kfree(block->data);
+    kfree(block);
+}
+
+/** 
+ * Create new tree with k as the node split/merge value. 
+ * @param k determines when nodes are split/merged. Nodes are 
+ *        split when they have 2k+1 nodes.
+ * @return the tree identifier value. 0 on failure to create tree.
+ */ 
 u64 blinktree_create(u8 k)
 {
     struct tree *t = NULL;
@@ -270,7 +276,7 @@ u64 blinktree_create(u8 k)
     /*root is a leaf by virtue of being the first and only node*/
     if (make_node(t, &n, acquire_nid(), LEAF_NODE)){
         pr_warn("Failed allocating a root node for the creation of a new tree\n");
-        BUG();
+        return 0;
     }
     t->root = n;
 
@@ -284,6 +290,18 @@ u64 blinktree_create(u8 k)
     TREE_LIST_UNLOCK();
 
     return t->tid;
+}
+
+/** 
+ * Remove tree identified by 'tid'
+ * @param tid the tree identifier.
+ * @return 0 on success, negative on errors. e.g. -ENOENT => no
+ *         such tree.
+ */ 
+int blinktree_remove(u64 tid)
+{
+    pr_warn("blinktree_remove not implemented yet!\n");
+    return -ENOENT;
 }
 
 /* 
@@ -767,44 +785,39 @@ static __always_inline struct btd *blinktree_scanleaf(struct btn *node, u64 key)
     return NULL; 
 }
 
-/*
- * root: pointer to root node
- * key: key to be searched for 
- * --- 
- * return: 
- *  - the matching leaf or NULL if nothing was found 
- * postconditions: 
- *  - path holds a reference to each node down the tree we visited
- *     (except those visited by way of a link pointer)
- *  - do *NOT* alter the node in any way.
- */  
-struct btd *blinktree_lookup(struct tree *tree, u64 key)
+
+/** 
+ * Locate the data node identified by 'nid'
+ * @param tid the tree identifier 
+ * @param nid the node identifier 
+ * @return NULL reference if no node was found. 
+ *         Otherwise a reference to the node 
+ */
+struct btd *blinktree_lookup(u64 tid, u64 nid)
 {
-    struct btn *c;
+    struct btn *c = NULL;
+    struct tree *tree = get_tree(tid);
+    
     CLYDE_ASSERT(tree != NULL);
     CLYDE_ASSERT(tree->root != NULL);
 
-    c = find_leaf_no_path(tree, key);
+    c = find_leaf_no_path(tree, nid);
     if ( unlikely(c == NULL) ) return NULL;
 
-    return blinktree_scanleaf(c, key);
+    return blinktree_scanleaf(c, nid);
 }
 
 
-/* 
- * examines node, searching for a subtree containing 'key' and 
- * if it is not found, moves to sibling node and repeats the 
- * search, while acquiring and releasing node locks as needed. 
- * --- 
- * preconditions: 
- *  the supplied 'node' is locked 
- * postconditions: 
- *  success: 
- *   (*node) points to a subtree/leaf related to 'key'
- *   (*node) is locked by this thread
- *  failure:
- *   BUG
- */
+/** 
+ * examines the node, searching for a subtree containing the
+ * supplied key. If it is not found, it moves to the sibling
+ * node (moving right) and continues the search.
+ * Acquires and releases node locks as needed.
+ * @post (*node) points to a subtree/leaf related to key
+ * @post (*node* is locked by this thread 
+ * @post if either of the two other post conditions fail, 
+ *       BUG() out. 
+*/
 static __always_inline void move_right(struct btn **node, u64 key)
 {
     struct btn *next_node;
@@ -851,18 +864,15 @@ static __always_inline void move_right(struct btn **node, u64 key)
     /*to get here, we must be at the rightmost leaf node of the tree*/
 }
 
-/* 
- * given the "old" parent, writes the new key for node_right and then modifies the old key 
+/** 
+ * Given the "old" parent, writes the new key for node_right, then modifies the old key
  * for the new contents of node_left to ensure consistency throughout the update procedure.
- * -- 
- *   return:
- *     - parent of node_right as this is the node into which a new insertion
- *     has been made (and thus where the algorithm must continue)
- *   precondition:
- *     - the parent and both nodes from the split are locked (by this thread)
- *   postcondition:
- *     - parent node(s) are updated to reflect the split of the child node.
- *     - all (potential 4) locks are released.
+ * @return parent node of node_right
+ * @post the two child nodes (node_left, node_right) are 
+ *       unlocked.
+ * @post parent node(s) are updated to reflect the split of the child node
+ * @note parent of node_right is the node into which a new insertion has been made, thus
+ *       also where the insert algorithm must continue
  */
 static __always_inline struct btn* patch_parents_children_entries(struct btn *parent_start, struct btn *node_left, struct btn *node_right)
 {
@@ -895,8 +905,8 @@ static __always_inline struct btn* patch_parents_children_entries(struct btn *pa
    while (1) {
        /* 
         * old node's high key will always be at most equal to the highkey of the parent 
-        * - if the node is the rightmost leafnode, its parent entry has key TREE_MAX_KEY 
-        * - if the node is the rightmost non-leaf node of that level, its HK is TREE_MAX_KEY and its parent entry has key TREE_MAX_KEY 
+        * - if the node is the rightmost leafnode, its parent entry has key TREE_MAX_NID 
+        * - if the node is the rightmost non-leaf node of that level, its HK is TREE_MAX_NID and its parent entry has key TREE_MAX_NID
         * - if the node is not the rightmost node, whether leaf or internal, its HK is less or equal to the parent's HK 
         */
        if (hk_nr <= node_high_key(cn)) {
@@ -946,7 +956,7 @@ static __always_inline struct btn* patch_parents_children_entries(struct btn *pa
    smp_mb();
    node_parent->child_keys[nl_entry_ndx] = hk_nl; /*update nl entry's hk to reflect what's left in nl node*/
 
-   /*FIXME unlock order correct ? not sure about <nl,nr> or <nr,nl>*/
+
    printk("\t\tbefore unlocking\n");
    NODE_UNLOCK(node_right);
    NODE_UNLOCK(node_left);
@@ -954,17 +964,15 @@ static __always_inline struct btn* patch_parents_children_entries(struct btn *pa
    return node_parent; /*retain lock on node and return it*/
 }
 
-
-/* 
- * insert entry into the tree identified by tree 
- * id 'tid', with data 'data' identified by key 'key'. 
- * --- 
- *  return:
- *      0: success
- *      n<0: error
- *      -ENOMEM: allocation errors
+/** 
+ * Insert a node into the tree identified by the id in 'tid'. 
+ * @param tid the tree identifier 
+ * @param nid the node id of the new node 
+ * @param data the data to insert. 
+ * @return 0 on success, negative on error. E.g. 
+ *         -ENOMEM => allocation errors 
  */
-int blinktree_insert(u64 tid, u64 key, void *data)
+int blinktree_node_insert(u64 tid, u64 nid, void *data)
 {
     /*
         FIXME
@@ -991,7 +999,7 @@ int blinktree_insert(u64 tid, u64 key, void *data)
     int retval;
     struct tree *tree;
 
-    CLYDE_ASSERT(key != TREE_MAX_KEY); /*reserved value, read definition*/
+    CLYDE_ASSERT(nid != TREE_MAX_NID); /*reserved value, read definition*/
     
     printk("before get_tree\n");
     tree = get_tree(tid);
@@ -1006,7 +1014,7 @@ int blinktree_insert(u64 tid, u64 key, void *data)
     }
 
     printk("before find_leaf\n");
-    node = find_leaf(tree->root, key, &tree_path);
+    node = find_leaf(tree->root, nid, &tree_path);
     if (node == NULL) {
         /*find_leaf got stuck somewhere on an internal node*/
         pr_warn("blinktree_insert: find_leaf got stuck on an internal node and returned NULL\n");
@@ -1017,17 +1025,17 @@ int blinktree_insert(u64 tid, u64 key, void *data)
     printk("after find_leaf (is lock contended?: %d)\n", spin_is_locked(node->lock));
     NODE_LOCK(node);
     printk("before move_right\n");
-    move_right(&node,key);
+    move_right(&node,nid);
 
     printk("before blinktree_scanleaf\n");
-    if (blinktree_scanleaf(node, key)){
+    if (blinktree_scanleaf(node, nid)){
         NODE_UNLOCK(node);
         retval = 0;
-        goto out; /*key already in tree*/
+        goto out; /*nid already in tree*/
     }
 
-    printk("blinktree_insert: node_insert(node, %llu, data)\n", key);
-    node_insert_entry(node,key,data);
+    printk("blinktree_insert: node_insert(node, %llu, data)\n", nid);
+    node_insert_entry(node,nid,data);
 
 split_or_done:
     printk("\t\tinside 'split_or_done'\n");
@@ -1102,7 +1110,7 @@ split_or_done:
             NODE_LOCK(root); /*required by node_insert, even if not strictly necessary*/
             printk("\t\tbefore inserting elements into root\n");
             node_insert_entry(root, node_high_key(node), node);
-            node_insert_entry(root, TREE_MAX_KEY, node_right); /*Ensure any possible key can enter this sub-tree*/
+            node_insert_entry(root, TREE_MAX_NID, node_right); /*Ensure any possible key can enter this sub-tree*/
             printk("\t\tbefore updating root tree\n");
             TREE_LIST_LOCK();
             set_tree_root(tid,root);
@@ -1123,23 +1131,24 @@ err_stack_alloc:
     return retval;
 }
 
-/* 
- * remove node identified by key 'key' 
- * --- 
- *  return:
- *      0 on success,
- *      negative on errors
- *      positive integers for various status codes
- *          1: no such key
- * ---  
+/**
+ * Remove node identified by the supplied key. 
+ * @description locates the node identified by the key 'key' 
+ *  in the tree identified by 'tid'
+ * @param tid the tree identifier, identifiying the tree 
+ *        in which the node resides.
+ * @param nid the node identifier, uniquely identifying 
+ *        the node within the tree. 
+ * @return 0 on success, negative on errors, e.g. 
+ *         -ENOENT => no such node
  */
-int blinktree_remove(u64 tid, u64 key)
+int blinktree_node_remove(u64 tid, u64 nid)
 {
     /* 
      * Scenarios 
      * --simple 
      *  remove the entry, there's still k entries left, no merging required,
-     *  key was not the node high-key, no further adjustments needed in path,stop
+     *  nid was not the node high-key, no further adjustments needed in path,stop
      * --not-so-simple 
      *  remove the entry, the entry is the node's high-key.
      *  - Still k entries left, no merging required,
@@ -1163,7 +1172,7 @@ int blinktree_remove(u64 tid, u64 key)
     struct stack tree_path;
     int retval = 0;
 
-    CLYDE_ASSERT(key != TREE_MAX_KEY); /*reserved value, read definition*/
+    CLYDE_ASSERT(nid != TREE_MAX_NID); /*reserved value, read definition*/
 
     tree = get_tree(tid);
     CLYDE_ASSERT(tree != NULL);
@@ -1176,20 +1185,20 @@ int blinktree_remove(u64 tid, u64 key)
     }
 
     printk("before find_leaf\n");
-    node = find_leaf(tree->root, key, &tree_path);
+    node = find_leaf(tree->root, nid, &tree_path);
     if (node == NULL) {
         /*find_leaf got stuck somewhere on an internal node*/
-        pr_warn("blinktree_insert: find_leaf got stuck on an internal node and returned NULL\n");
-        retval = 1; 
+        pr_warn("blinktree_node_remove: find_leaf got stuck on an internal node and returned NULL\n");
+        retval = -ENOENT; 
         goto out;
     }
 
     printk("after find_leaf (is lock contended?: %d)\n", spin_is_locked(node->lock));
     NODE_LOCK(node);
     printk("before move_right\n");
-    move_right(&node,key);
+    move_right(&node,nid);
     /*FIXME: if this entry is data, I'd need to free the associated structure */
-    node_remove_entry(node, key);
+    node_remove_entry(node, nid);
     NODE_UNLOCK(node);
 
 err_stack_alloc:

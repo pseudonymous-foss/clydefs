@@ -1,4 +1,6 @@
 #include <linux/module.h>
+#include "utils.h"
+#include "treeinterface.h"
 
 short dodebug = 0;
 
@@ -18,12 +20,14 @@ static int __init init_clydefscore(void)
         printk("\t->dodebug=1\n");
         tests_init();
     }
-
+    if (treeinterface_init())
+        return 1;
     return 0;
 }
 
 static void __exit exit_clydefscore(void)
 {
+    treeinterface_exit();
     printk(KERN_INFO "ClydeFS core unloaded\n");
 }
 
