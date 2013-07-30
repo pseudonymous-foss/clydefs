@@ -445,10 +445,10 @@ static ssize_t store_createtree(struct aoedev *dev, const char *page, size_t len
     td = (struct tree_iface_data *) b->bi_treecmd;
     /*BOGUS VALUES*/
     td->cmd = AOECMD_CREATETREE;
-    td->len = 1337; /*ignored*/
-    td->tid = 14;
-    td->nid = 140;
-    td->off = 768; /*ignored*/
+    td->len = 0; /*ignored*/
+    td->tid = 0; /*ignored now, set on return*/
+    td->nid = 0; /*ignored*/
+    td->off = 0; /*ignored*/
     b->bi_bdev = dev->blkdev;
     submit_bio(0, b);
     log_cmd("create_tree");

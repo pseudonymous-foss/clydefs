@@ -365,7 +365,7 @@ __tree_rw_frameinit(struct frame *f, struct aoe_datahdr *dh, struct tree_iface_d
 
     
     dh->tree.off = ti->off + f->lba; /*cmd/node offset + fragment offset*/
-    if (bio_data_dir(f->buf->bio) == WRITE) {
+    if (f->buf && bio_data_dir(f->buf->bio) == WRITE) {
         printk("WRITE MODE ENGAGED\n");
         skb_fillup(f->skb, f->bv, f->bv_off, f->bcnt);
         f->skb->len += f->bcnt;
@@ -444,7 +444,7 @@ data_rw_frameinit(struct frame *f)
 	h = (struct aoe_hdr *) skb_mac_header(skb);
 	dh = (struct aoe_datahdr *) (h + 1);
 	skb_put(skb, sizeof(*h) + sizeof(*dh));
-	memset(h, 0, skb->len);
+	memset(h, 0, skb->len); /*clear all fields*/
 
 	t = f->t;
 	aoe_buf = f->buf;
@@ -530,8 +530,10 @@ aoecmd_ata_rw(struct aoedev *d)
 
     /*initialise frame header and copy data contents*/
 	if (data_rw_frameinit(f)) { /*tree cmd*/
-        buf->sector += f->bcnt; /*byte-addressability*/
+        printk("new tree cmd out\n");
+        buf->sector += bcnt; /*byte-addressability*/
     } else { /*ATA cmd*/
+        printk("new ATA cmd out\n");
         buf->sector += bcnt >> 9; /*sector-addressability*/
     }
     buf->nframesout += 1;
@@ -926,6 +928,7 @@ rexmit_timer(ulong vp)
 			if (tsince_hr(f) < timeout)
 				break;	/* end of expired frames */
 			/* move to flist for later processing */
+            printk("fround frame to rexmit, tag: %ul\n", f->tag);
 			list_move_tail(pos, &flist);
 		}
 	}
@@ -1098,7 +1101,7 @@ aoecmd_work(struct aoedev *d)
 {
 	rexmit_deferred(d);
 	while (aoecmd_ata_rw(d))
-		;
+		printk("more to send...\n");
 }
 
 /* this function performs work that has been deferred until sleeping is OK
@@ -1294,44 +1297,26 @@ aoe_end_buf(struct aoedev *d, struct buf *buf)
 		aoe_end_request(d, rq, 0);
 }
 
-static void
-ktiocomplete(struct frame *f)
+static __always_inline void on_noskb(struct buf *buf)
 {
-	struct aoe_hdr *hin, *hout;
-    struct aoe_datahdr *dhin, *dhout;
-	struct buf *buf;
-	struct sk_buff *skb;
-	struct aoetgt *t;
-	struct aoeif *ifp;
-	struct aoedev *d;
-	long n;
-	int untainted;
+    if (buf)
+        clear_bit(BIO_UPTODATE, &buf->bio->bi_flags);
+}
 
-	if (f == NULL)
-		return;
+static void ktiocomplete_ata(struct frame *f, struct aoe_hdr *hin, struct aoe_datahdr *dhin, struct aoe_hdr *hout, struct aoe_datahdr *dhout)
+{
+    long n;
+    struct sk_buff *skb = f->r_skb; /*response socket buffer*/
+    struct buf *buf = f->buf;
+    struct aoetgt *t = f->t;
+    struct aoedev *d = t->d;
+    struct aoeif *ifp;
 
-	t = f->t;
-	d = t->d;
-	skb = f->r_skb;
-	buf = f->buf;
-	if (f->flags & FFL_PROBE)
-		goto out;
-	if (!skb)		/* just fail the buf. */
-		goto noskb;
-
-	hout = (struct aoe_hdr *) skb_mac_header(f->skb);
-	dhout = (struct aoe_datahdr *) (hout+1);
-
-	hin = (struct aoe_hdr *) skb->data;
-	skb_pull(skb, sizeof(*hin));
-	dhin = (struct aoe_datahdr *) skb->data;
-	skb_pull(skb, sizeof(*dhin));
-	if (dhin->ata.cmdstat & 0xa9) {	/* these bits cleared on success */
+    if (dhin->ata.cmdstat & 0xa9) {	/* these bits cleared on success */
 		pr_err("aoe: ata error cmd=%2.2Xh stat=%2.2Xh from e%ld.%d\n",
 			dhout->ata.cmdstat, dhin->ata.cmdstat,
 			d->aoemajor, d->aoeminor);
-noskb:		if (buf)
-			clear_bit(BIO_UPTODATE, &buf->bio->bi_flags);
+        on_noskb(buf);
 		goto out;
 	}
 
@@ -1370,15 +1355,77 @@ noskb:		if (buf)
 		ataid_complete(d, t, skb->data);
 		spin_unlock_irq(&d->lock);
 		break;
-	case AOECMD_READNODE:
-		pr_info("AOECMD_READNODE response received\n");
-		break;
 	default:
 		pr_info("aoe: unrecognized ata command %2.2Xh for %d.%d\n",
 			dhout->ata.cmdstat,
 			be16_to_cpu(get_unaligned(&hin->major)),
 			hin->minor);
 	}
+out:
+    return;
+}
+
+static void ktiocomplete_tree(struct frame *f, struct aoe_hdr *hin, 
+                    struct aoe_datahdr *dhin, struct aoe_hdr *hout, struct aoe_datahdr *dhout)
+{
+    struct sk_buff *skb = f->r_skb; /*response socket buffer*/
+    struct aoetgt *t = f->t;
+    struct aoedev *d = t->d;
+    struct aoeif *ifp;
+
+    /*printk("ktiocomplete_tree : treating a treecmd response!\n");*/
+    #if 0
+    /*cancels out the slowdowns seen as a result of missing responses on many packages*/
+    spin_lock_irq(&d->lock);
+    ifp = getif(t, skb->dev);
+	if (ifp)
+		ifp->lost = 0;
+	spin_unlock_irq(&d->lock);
+    #endif
+    return;
+}
+
+static void
+ktiocomplete(struct frame *f)
+{
+	struct aoe_hdr *hin, *hout;
+    struct aoe_datahdr *dhin, *dhout;
+	struct buf *buf;
+	struct sk_buff *skb;
+	struct aoetgt *t;
+	struct aoedev *d;
+	int untainted;
+
+	if (f == NULL)
+		return;
+
+	t = f->t;
+	d = t->d;
+	skb = f->r_skb;
+	buf = f->buf;
+	if (f->flags & FFL_PROBE)
+		goto out;
+	if (!skb){		/* just fail the buf. */
+        on_noskb(buf);
+        goto out;
+    }
+
+	hout = (struct aoe_hdr *) skb_mac_header(f->skb);
+	dhout = (struct aoe_datahdr *) (hout+1);
+
+	hin = (struct aoe_hdr *) skb->data;
+	skb_pull(skb, sizeof(*hin));
+	dhin = (struct aoe_datahdr *) skb->data;
+	skb_pull(skb, sizeof(*dhin));
+    
+    if(is_tree_cmd(hin->cmd))
+    {
+        ktiocomplete_tree(f,hin,dhin,hout,dhout);
+    } else {
+        ktiocomplete_ata(f,hin,dhin,hout,dhout);
+    }
+    
+	
 out:
 	spin_lock_irq(&d->lock);
 	if (t->taint > 0
@@ -1394,7 +1441,12 @@ out:
 	aoe_freetframe(f);
 
 	if (buf && --buf->nframesout == 0 && buf->resid == 0)
+    {
+        if(is_tree_cmd(hin->cmd))
+            printk("!! end of tree buffer\n");
+
 		aoe_end_buf(d, buf);
+    }
 
 	spin_unlock_irq(&d->lock);
 	aoedev_put(d);

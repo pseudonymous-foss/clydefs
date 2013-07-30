@@ -134,7 +134,7 @@ aoenet_rcv(struct sk_buff *skb, struct net_device *ifp, struct packet_type *pt, 
     struct aoe_datahdr *ah;
 	u32 n;
 	int sn;
-
+    /*printk("WE GOT OUTSELVES A MESSAGE !\n");*/
 	if (dev_net(ifp) != &init_net)
 		goto exit;
 
@@ -161,31 +161,28 @@ aoenet_rcv(struct sk_buff *skb, struct net_device *ifp, struct packet_type *pt, 
 			n = 0;
 		if (net_ratelimit())
 			printk(KERN_ERR
-				"%s%d.%d@%s; ecode=%d '%s'\n",
+				"\t%s%d.%d@%s; ecode=%d '%s'\n",
 				"aoe: error packet from ",
 				get_unaligned_be16(&h->major),
 				h->minor, skb->dev->name,
 				h->err, aoe_errlist[n]);
 		goto exit;
 	}
-
-	switch (h->cmd) {
-	case AOECMD_ATA:
-		/* ata_rsp may keep skb for later processing or give it back */
-		skb = aoecmd_data_rsp(skb);
-		break;
-	case AOECMD_CFG:
-		aoecmd_cfg_rsp(skb);
-		break;
-    case AOECMD_READNODE:
-        /*FIXME do something here*/
-        /*break;*/
-	default:
-		if (h->cmd >= AOECMD_VEND_MIN)
-			break;	/* don't complain about vendor commands */
-		pr_info("aoe: unknown AoE command type 0x%02x\n", h->cmd);
-		break;
-	}
+    /*printk("\tabout to parse cmd type (cmd: 0x%02x)\n", h->cmd);*/
+    if ( h->cmd == AOECMD_ATA || is_tree_cmd(h->cmd) ) {
+        /*printk("\treceived ATA or TREE cmd (val: 0x%02x)\n", h->cmd);*/
+        if ( is_tree_cmd(h->cmd)) {
+            /*printk("\tTREE CMD RECOGNIZED");*/
+        }
+        skb = aoecmd_data_rsp(skb);
+    } else if (h->cmd == AOECMD_CFG)
+        aoecmd_cfg_rsp(skb);
+    else {
+        if (h->cmd < AOECMD_VEND_MIN)
+            pr_info("\taoe: unknown AoE command type 0x%02x\n", h->cmd);
+        /*don't warn about unrecognized vendor-specific cmd's*/
+          
+    }
 
 	if (!skb)
 		return 0;

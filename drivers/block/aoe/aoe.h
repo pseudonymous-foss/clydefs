@@ -42,6 +42,13 @@ enum {
     AOECMD_REMOVENODE,          /*remove the node and associated data*/
 };
 
+/** 
+ * Check that the AoE command is a TREE command.
+ * @param cmd the AoE command to check 
+ * @return 1 if 'cmd' is a tree command, 0 otherwise 
+ */
+#define is_tree_cmd(cmd) ((cmd >= AOECMD_CREATETREE) && (cmd <= AOECMD_REMOVENODE))
+
 struct aoe_hdr {
 	unsigned char dst[6];
 	unsigned char src[6];
