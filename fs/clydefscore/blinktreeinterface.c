@@ -70,11 +70,11 @@ static int blinktreeinterface_node_write(u64 tid, u64 nid, u64 offset, u64 len, 
     }
 }
 
-static int blinktreeinterface_node_insert(u64 tid, ssize_t len, void *data)
+static int blinktreeinterface_node_insert(u64 tid, u64 *nid)
 { /*implements treeinterface->node_insert*/
 
     /*FIXME assuming single data node of 1MB size*/
-    u64 nid;
+    u64 tmp;
     int retval = 0;
     struct btd *db = NULL;
 
@@ -82,20 +82,19 @@ static int blinktreeinterface_node_insert(u64 tid, ssize_t len, void *data)
         pr_warn("insert: failed to allocate data block\n");
         goto err_data_alloc;
     }
-    if (len > 1024) {
-        pr_warn("insert: present implementation do not support writing past 1MB range");
-        goto err_data_cpy;
-    }
-    memcpy(db->data, data, len);
+    memset(db->data,0,1024); /*clear data*/
 
-    nid = nidcnt_inc_get();
-    if ( (retval=blinktree_node_insert(tid,nid,db)) ) {
-        pr_warn("insert: insertion failed! tid[%llu], nid[%llu] with %ld bytes of data\n",tid,nid,len);
+    tmp = nidcnt_inc_get();
+    if ( (retval=blinktree_node_insert(tid,tmp,db)) ) {
+        pr_warn("insert: insertion failed! tid[%llu], nid[%llu]\n",tid,tmp);
         goto err_insert;
     }
+
+    /* success */
+    *nid = tmp;
+    return 0; 
 err_insert:
     nidcnt_dec();
-err_data_cpy:
     data_block_free(db);
 err_data_alloc:
     return retval;

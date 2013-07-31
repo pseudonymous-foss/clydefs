@@ -23,9 +23,9 @@ int clydefscore_tree_remove(u64 tid)
 EXPORT_SYMBOL(clydefscore_tree_remove);
 
 
-u64 clydefscore_node_insert(u64 tid, ssize_t len, void *data)
+u64 clydefscore_node_insert(u64 tid, u64 *nid)
 {
-    return ti.node_insert(tid,len,data); //FIXME, wrong retval type
+    return ti.node_insert(tid,nid);
 }
 EXPORT_SYMBOL(clydefscore_node_insert);
 

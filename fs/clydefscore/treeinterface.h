@@ -25,13 +25,16 @@ struct treeinterface {
      * @param data a pointer to the data itself 
      * @return 0 on success. Negative values indicate errors. 
      *         -ENOMEM in particular if out of memory.
+     *         -ENOENT => no tree by 'tid'
+     * @post provided function returns successfully. 'nid' will be 
+     *       set to the assigned node identifier.
      */
-    int (*node_insert)(u64 tid, ssize_t len, void *data);
+    int (*node_insert)(u64 tid, u64 *nid);
     /**
      * @param tid the tree identifier
      * @param nid the node identifier
      * @return 0 on success. Negative values on errors. Positive 
-     *         values as status codes. 1 => no such node
+     *         values as status codes. -ENOENT => no such node
      */
     int (*node_remove)(u64 tid, u64 nid);
     /**

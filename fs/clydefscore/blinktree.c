@@ -114,7 +114,7 @@ static __always_inline struct tree *get_tree(u64 tid)
 
     /*err out*/
     pr_warn("\n\nget_tree: could not find any tree with id(%llu)!\n", tid);
-    BUG();
+    return NULL;
 }
 
 /* 
@@ -300,6 +300,10 @@ u64 blinktree_create(u8 k)
  */ 
 int blinktree_remove(u64 tid)
 {
+    /* 
+        Unlink tree, clean when not busy, may need a worker counter indicating
+        how many threads work on the tree at any moment
+    */ 
     pr_warn("blinktree_remove not implemented yet!\n");
     return -ENOENT;
 }
@@ -970,7 +974,8 @@ static __always_inline struct btn* patch_parents_children_entries(struct btn *pa
  * @param nid the node id of the new node 
  * @param data the data to insert. 
  * @return 0 on success, negative on error. E.g. 
- *         -ENOMEM => allocation errors 
+ *         -ENOMEM => allocation errors
+ *         -ENOENT => no tree by 'tid'
  */
 int blinktree_node_insert(u64 tid, u64 nid, void *data)
 {
@@ -1003,7 +1008,10 @@ int blinktree_node_insert(u64 tid, u64 nid, void *data)
     
     printk("before get_tree\n");
     tree = get_tree(tid);
-    CLYDE_ASSERT(tree != NULL);
+    if (unlikely(tree == NULL)) {
+        /*No tree found by id 'tid'.*/
+        return -ENOENT;
+    }
     CLYDE_ASSERT(tree->root != NULL);
     CLYDE_ASSERT(data != NULL);
 
