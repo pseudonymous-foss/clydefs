@@ -20,6 +20,8 @@ MODULE_VERSION(VERSION);
 static struct kmem_cache *tree_iface_pool = NULL;
 static struct bio_set *bio_pool = NULL;
 
+static u8 empty_read_buffer = 255;
+
 /** 
  * extended bio data for the tree-based
  * interface.
@@ -97,7 +99,8 @@ static __always_inline void cleanup_if_treebio(struct bio *b)
 {
     /*all done, cleanup time*/
     if (is_tree_bio(b)) { 
-        kmem_cache_free(tree_iface_pool, b->bi_private);
+        printk("cleanup_if_treebio: is_tree_bio(b) => true\n");
+        kmem_cache_free(tree_iface_pool, b->bi_treecmd);
         b->bi_private = NULL;
     }
 }
@@ -435,7 +438,9 @@ static ssize_t store_createtree(struct aoedev *dev, const char *page, size_t len
 {
     struct bio *b = NULL;
     struct tree_iface_data *td = NULL;
-    //u64 tid = 0;
+    struct page *p;
+    ulong bcnt, vec_off;
+
     printk("store_createtree called\n");
 
     b = alloc_bio(TREE_BIO);
@@ -449,11 +454,22 @@ static ssize_t store_createtree(struct aoedev *dev, const char *page, size_t len
     td->tid = 0; /*ignored now, set on return*/
     td->nid = 0; /*ignored*/
     td->off = 0; /*ignored*/
+
     b->bi_bdev = dev->blkdev;
-    submit_bio(0, b);
+    p = virt_to_page(&empty_read_buffer);
+    bcnt = sizeof(empty_read_buffer);
+    vec_off = offset_in_page(&empty_read_buffer);
+
+    if (bio_add_page(b,p,bcnt,vec_off) < bcnt) {
+        goto err_page_add;
+    }
+
+    submit_bio(READ, b);
     log_cmd("create_tree");
 
     return len;
+err_page_add:
+    dealloc_bio(b);
 err_alloc:
     printk("create_tree sysfs call failed\n");
     return len;
@@ -494,7 +510,6 @@ static ssize_t store_insertnode(struct aoedev *dev, const char *page, size_t len
     b->bi_private = data;
     b->bi_bdev = dev->blkdev;
     b->bi_end_io = alloc_bio_end_fnc;
-    b->bi_rw |= WRITE;
 
     p = virt_to_page(data);
     bcnt = sizeof(data);
@@ -506,7 +521,7 @@ static ssize_t store_insertnode(struct aoedev *dev, const char *page, size_t len
         goto err_page_add;
     }
 
-    submit_bio(0, b);
+    submit_bio(WRITE, b);
     log_cmd("insert_node");
     return len;
 
@@ -617,7 +632,6 @@ aoe_init(void)
     }
 
     return 0;
-
 err_alloc_biopool:
     kmem_cache_destroy(tree_iface_pool);
 err_alloc_treepool:
