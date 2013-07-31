@@ -1374,6 +1374,8 @@ static void ktiocomplete_tree(struct frame *f, struct aoe_hdr *hin,
     struct aoeif *ifp;
 
     /*printk("ktiocomplete_tree : treating a treecmd response!\n");*/
+    printk("ktiocomplete_tree: (out)treecmd(%u), => tid(%llu), errcode:(0x%x)\n", hout->cmd, dhout->tree.tid, dhout->tree.err);
+    printk("ktiocomplete_tree: (in)treecmd(%u), => tid(%llu), errcode:(0x%x)\n", hin->cmd, dhin->tree.tid, dhin->tree.err);
     #if 0
     /*cancels out the slowdowns seen as a result of missing responses on many packages*/
     spin_lock_irq(&d->lock);

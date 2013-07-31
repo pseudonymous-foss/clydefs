@@ -75,12 +75,28 @@ struct aoe_atahdr {
 	unsigned char res[2];
 };
 
+/** 
+ * extended bio data for the tree-based
+ * interface.
+ */ 
+struct tree_iface_data {
+    u8 cmd;         /*one of the vendor-specific AOECMD_* codes*/
+    u64 tid;
+    u64 nid;
+    u64 off;
+    u64 len;
+    u32 err;
+};
 
+/** 
+ * what is actually being sent across
+ */
 struct aoe_treehdr {
     u64 tid;
     u64 nid;
     u64 off;
     u64 len;
+    u32 err;
 };
 
 /*branch on AoE command value*/
@@ -230,18 +246,6 @@ struct ktstate {
 	int (*fn) (void);
 	char *name;
 	spinlock_t *lock;
-};
-
-/** 
- * extended bio data for the tree-based
- * interface.
- */ 
-struct tree_iface_data {
-    u8 cmd;         /*one of the vendor-specific AOECMD_* codes*/
-    u64 tid;
-    u64 nid;
-    u64 off;
-    u64 len;
 };
 
 int aoeblk_init(void);

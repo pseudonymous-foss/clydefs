@@ -32,6 +32,7 @@ struct tree_iface_data {
     u64 nid;
     u64 off;
     u64 len;
+    u64 err;
 };
 
 static void aoetest_release(struct kobject *kobj);
