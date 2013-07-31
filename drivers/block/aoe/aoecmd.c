@@ -1372,18 +1372,44 @@ static void ktiocomplete_tree(struct frame *f, struct aoe_hdr *hin,
     struct aoetgt *t = f->t;
     struct aoedev *d = t->d;
     struct aoeif *ifp;
+    struct bio *b;
+    struct tree_iface_data *td;
 
     /*printk("ktiocomplete_tree : treating a treecmd response!\n");*/
     printk("ktiocomplete_tree: (out)treecmd(%u), => tid(%llu), errcode:(0x%x)\n", hout->cmd, dhout->tree.tid, dhout->tree.err);
     printk("ktiocomplete_tree: (in)treecmd(%u), => tid(%llu), errcode:(0x%x)\n", hin->cmd, dhin->tree.tid, dhin->tree.err);
-    #if 0
-    /*cancels out the slowdowns seen as a result of missing responses on many packages*/
+    
+    b = f->buf->bio;
+    td = (struct tree_iface_data*)b->bi_treecmd;
+    td->tid = dhin->tree.tid;
+    td->nid = dhin->tree.nid;
+    td->err = dhin->tree.err;
+    switch(hin->cmd) {
+    case AOECMD_CREATETREE:
+        td->tid = dhin->tree.tid;
+    case AOECMD_REMOVETREE:
+    case AOECMD_REMOVENODE:
+    case AOECMD_UPDATENODE:
+        td->err = dhin->tree.err; /*FIXME: UpdateNode only: last err reply becomes canon*/
+        break;
+    case AOECMD_INSERTNODE:
+        td->nid = dhin->tree.nid;
+        td->err = dhin->tree.err; /*FIXME: last err message becomes canon*/
+        break;
+    case AOECMD_READNODE:
+        td->err = dhin->tree.err;
+        bvcpy(f->bv, f->bv_off, skb, dhout->tree.len);
+        break;
+    }
+    
+    /*Reset ethernet interface stats on lost packets 
+      (code elsewhere will boot an iface if the counter gets too high)*/
     spin_lock_irq(&d->lock);
     ifp = getif(t, skb->dev);
 	if (ifp)
 		ifp->lost = 0;
 	spin_unlock_irq(&d->lock);
-    #endif
+
     return;
 }
 
