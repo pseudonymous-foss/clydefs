@@ -85,7 +85,6 @@ struct submit_syncbio_data {
 	int error;
 };
 
-
 static __always_inline void log_cmd(char *cmd_name)
 {
     printk("AoETest, CMD SENT: %s\n", cmd_name);
@@ -266,6 +265,40 @@ static ssize_t aoetest_sysfs_args(char *p, char *argv[], int argv_max)
 	return argc;
 }
 
+/** 
+ * split arg string into words, storing each pointer in argv. 
+ * @param page the input string to be parsed and split into 
+ *             words
+ * @param len the length of the input string 
+ * @param p will hold the memory allocation made by this
+ *          function.
+ * @param argv an array of char*, will have a non-null entry for 
+ *             each word found in the input string given by
+ *             'page'
+ * @param argv_max maximum entries that argv can hold. 
+ * @pre '*p' is NULL 
+ * @pre 'page' points to the start of a c-string 
+ * @pre 'argv' is an allocated array of char* of at least as 
+ *      great a size as the number of arguments expected
+ * @note you are responsible for releasing the memory pointed to 
+ *       by *p using kfree, provided the function returns
+ *       successfully
+ * @return -ENOMEM if allocation fails, otherwise the number of 
+ *         words found.
+ */ 
+static ssize_t __parse_args(const char *page, size_t len, char **p, char *argv[], int argv_max)
+{
+	*p = kmalloc(len+1, GFP_ATOMIC);
+    if (*p == NULL) {
+        printk(KERN_ERR "aoedev_store_add: could not allocate memory for string buffer\n");
+        return -ENOMEM;
+    }
+	memcpy(*p, page, len);
+	(*p)[len] = '\0';
+	
+    return aoetest_sysfs_args(*p, argv, argv_max);
+}
+
 static ssize_t __aoedev_add_dev(char *dev_path , char *tag)
 {
 	struct block_device *bd;
@@ -332,23 +365,21 @@ static ssize_t aoedev_store_add(struct aoedev *dev, const char *page, size_t len
 	int error = 0;
 	char *argv[16];
 	char *p = NULL;
+    int numargs = __parse_args(page,len,&p,argv,nelem(argv));
 
-	p = kmalloc(len+1, GFP_ATOMIC);
-    if (p == NULL) {
-        printk(KERN_ERR "aoedev_store_add: could not allocate memory for string buffer\n");
-        return -ENOMEM;
+    if (unlikely(numargs < 0)) {
+        goto parse_args_err;
+    } else if (numargs != 2) {
+        printk(KERN_ERR "bad arg count for add\n");
+        error = -EINVAL;
+    } else {
+        error = __aoedev_add_dev(argv[0], argv[1]); /*dev_path, tag*/
     }
-	memcpy(p, page, len);
-	p[len] = '\0';
-	
-	if (aoetest_sysfs_args(p, argv, nelem(argv)) != 2) {
-		printk(KERN_ERR "bad arg count for add\n");
-		error = -EINVAL;
-	} else
-		error = __aoedev_add_dev(argv[0], argv[1]); /*dev_path, tag*/
 
 	kfree(p);
 	return error ? error : len;
+parse_args_err:
+    return -EINVAL;
 }
 static struct aoetest_sysfs_entry aoedev_sysfs_add = __ATTR(add, 0644, NULL, aoedev_store_add);
 
@@ -394,20 +425,19 @@ static ssize_t aoedev_store_del(struct aoedev *dev, const char *page, size_t len
 	int error = 0;
 	char *argv[16];
 	char *p = NULL;
+    int numargs = __parse_args(page,len,&p,argv,nelem(argv));
 
-	p = kmalloc(len+1, GFP_ATOMIC);
-    if (p == NULL) {
-        printk(KERN_ERR "aodev_store_del: could not allocate memory for string buffer..\n");
-        return -ENOMEM;
+    if (numargs < 0)
+    {
+        printk(KERN_ERR "failed to allocate buffer for parsing input\n");
+        return -EINVAL;
+    } else if (numargs != 1) {
+        printk(KERN_ERR "expects 1 argument only\n");
+        error = -EINVAL;
     }
-	memcpy(p, page, len);
-	p[len] = '\0';
-
-	if (aoetest_sysfs_args(p, argv, nelem(argv)) != 1) {
-		printk(KERN_ERR "bad arg count for del\n");
-		error = -EINVAL;
-	} else
-		error = __aodev_del_dev(argv[0]);
+    else {
+        __aodev_del_dev(argv[0]);
+    }
 
 	kfree(p);
 	return error ? error : len;
@@ -449,12 +479,9 @@ static ssize_t store_createtree(struct aoedev *dev, const char *page, size_t len
         goto err_alloc;
 
     td = (struct tree_iface_data *) b->bi_treecmd;
-    /*BOGUS VALUES*/
+
     td->cmd = AOECMD_CREATETREE;
-    td->len = 0; /*ignored*/
     td->tid = 0; /*ignored now, set on return*/
-    td->nid = 0; /*ignored*/
-    td->off = 0; /*ignored*/
 
     b->bi_bdev = dev->blkdev;
     p = virt_to_page(&empty_read_buffer);
@@ -477,48 +504,123 @@ err_alloc:
 }
 static struct aoetest_sysfs_entry aoetest_sysfs_createtree = __ATTR(create_tree, 0644, NULL, store_createtree);
 
-static ssize_t store_insertnode(struct aoedev *dev, const char *page, size_t len)
+static ssize_t store_removetree(struct aoedev *dev, const char *page, size_t len)
 {
+    /*arg parse stuff*/
+    char *pstr = NULL;
+    char *argv[16];
+    int numargs;
+
+    /*call-specific*/
     struct bio *b = NULL;
     struct tree_iface_data *td = NULL;
     struct page *p;
     ulong bcnt, vec_off;
-    int *data = NULL;
+    size_t error;
+
+    printk("store_removetree called\n");
+    numargs = __parse_args(page,len,&pstr,argv,nelem(argv));
+    if (numargs < 0) {
+        printk(KERN_ERR "failed to allocate buffer for parsing input string\n");
+        error = -ENOMEM;
+        goto err;
+    } else if (numargs != 1) {
+        printk(KERN_ERR "expected 1 argument, the tree identifier\n");
+        error = -EINVAL;
+        goto err_arg_input;
+    }
+
+    b = alloc_bio(TREE_BIO);
+    if (!b) {
+        error = -ENOMEM;
+        goto err_bio_alloc;
+    }
+
+    td = (struct tree_iface_data *) b->bi_treecmd;
+
+    td->cmd = AOECMD_REMOVETREE;
+    if (kstrtou64(argv[0],10,&td->tid)) {
+        error = -EINVAL;
+        goto err_numparse;
+    }
+
+    b->bi_bdev = dev->blkdev;
+    p = virt_to_page(&empty_read_buffer);
+    bcnt = sizeof(empty_read_buffer);
+    vec_off = offset_in_page(&empty_read_buffer);
+
+    if (bio_add_page(b,p,bcnt,vec_off) < bcnt) {
+        error = -ENOMEM;
+        goto err_page_add;
+    }
+
+    submit_bio(READ, b);
+    log_cmd("remove_tree");
+
+    return len;
+err_page_add:
+err_numparse:
+    dealloc_bio(b);
+err_bio_alloc:
+err_arg_input:
+    kfree(pstr);
+err:
+    printk(KERN_ERR "remove_tree sysfs call failed\n");
+    return error;
+}
+static struct aoetest_sysfs_entry aoetest_sysfs_removetree = __ATTR(remove_tree, 0644, NULL, store_removetree);
+
+static ssize_t store_insertnode(struct aoedev *dev, const char *page, size_t len)
+{
+    /*arg parse stuff*/
+    char *pstr = NULL;
+    char *argv[16];
+    int numargs;
+    /*call-specific*/
+    struct bio *b = NULL;
+    struct tree_iface_data *td = NULL;
+    struct page *p;
+    ulong bcnt, vec_off;
+    ssize_t error;
 
     printk("store_insertnode called\n");
-    
-    data = kmalloc(sizeof(int), GFP_ATOMIC);
-    if (!data)  {
-        printk("aoetest - insertnode: failed to allocate data field\n");
-        goto err_data_alloc;
+    numargs = __parse_args(page,len,&pstr,argv,nelem(argv));
+    if (numargs < 0) {
+        printk(KERN_ERR "failed to allocate buffer for parsing input string\n");
+        error = -ENOMEM;
+        goto err;
+    } else if (numargs != 1) {
+        printk(KERN_ERR "expected 1 argument, the tree identifier\n");
+        error = -EINVAL;
+        goto err_arg_input;
     }
-    /*data, simple system, two 1's followed by a sequence of zeroes, the length of which increases each time*/
-    *data = 0b11001100011000011000001100000011;
 
     b = alloc_bio(TREE_BIO);
     if (!b) {
         printk("aoetest - insertnode: failed to allocate a bio\n");
+        error = -ENOMEM;
         goto err_bio_alloc;
     }
 
     td = (struct tree_iface_data *) b->bi_treecmd;
     
     td->cmd = AOECMD_INSERTNODE;
-    /*td->len  --should NOT need to populate*/
-    /*td->nid -- NOT needed for this*/
-    td->off = 100; /*begin writing the data 100 bytes into the start of the node data*/
+    if (kstrtou64(argv[0],10,&td->tid)) {
+        error = -EINVAL;
+        goto err_numparse;
+    }
     
-    b->bi_private = data;
     b->bi_bdev = dev->blkdev;
     b->bi_end_io = alloc_bio_end_fnc;
 
-    p = virt_to_page(data);
-    bcnt = sizeof(data);
-    vec_off = offset_in_page(data);
+    p = virt_to_page(&empty_read_buffer);
+    bcnt = sizeof(empty_read_buffer);
+    vec_off = offset_in_page(&empty_read_buffer);
 
     printk("b4 bio_add_page\n");
     if (bio_add_page(b, p, bcnt, vec_off) < bcnt) {
         printk(KERN_ERR "insert_node bio could not add page worth %lu bytes of data\n", bcnt);
+        error = -ENOMEM;
         goto err_page_add;
     }
 
@@ -527,19 +629,280 @@ static ssize_t store_insertnode(struct aoedev *dev, const char *page, size_t len
     return len;
 
 err_page_add:
+err_numparse:
     dealloc_bio(b);
 err_bio_alloc:
-    kfree(data);
-err_data_alloc:
-    return len; /*err*/
+err_arg_input:
+    kfree(pstr);
+err:
+    printk(KERN_ERR "insert_node sysfs call failed\n");
+    return error;
 }
 static struct aoetest_sysfs_entry aoetest_sysfs_insertnode = __ATTR(insert_node, 0644, NULL, store_insertnode);
+
+static ssize_t store_updatenode(struct aoedev *dev, const char *page, size_t len)
+{
+    /*arg parse stuff*/
+    char *pstr = NULL;
+    char *argv[16];
+    int numargs;
+    /*call-specific*/
+    struct bio *b = NULL;
+    struct tree_iface_data *td = NULL;
+    struct page *p;
+    ulong bcnt, vec_off;
+    ssize_t error;
+
+    printk("store_updatenode called\n");
+    numargs = __parse_args(page,len,&pstr,argv,nelem(argv));
+    if (numargs < 0) {
+        printk(KERN_ERR "failed to allocate buffer for parsing input string\n");
+        error = -ENOMEM;
+        goto err;
+    } else if (numargs != 5) { /*ARGS: tid nid off len data*/
+        printk(KERN_ERR "expected 5 arguments (tid,nid,off,len,data)\n");
+        error = -EINVAL;
+        goto err_arg_input;
+    }
+
+    b = alloc_bio(TREE_BIO);
+    if (!b) {
+        printk("aoetest - updatenode: failed to allocate a bio\n");
+        error = -ENOMEM;
+        goto err_bio_alloc;
+    }
+
+    td = (struct tree_iface_data *) b->bi_treecmd;
+    
+    td->cmd = AOECMD_UPDATENODE;
+    if (kstrtou64(argv[0],10,&td->tid)) {
+        error = -EINVAL;
+        goto err_numparse;
+    }
+    if (kstrtou64(argv[1],10,&td->nid)) {
+        error = -EINVAL;
+        goto err_numparse;
+    }
+    if (kstrtou64(argv[2],10,&td->off)) {
+        error = -EINVAL;
+        goto err_numparse;
+    }
+    if (kstrtou64(argv[3],10,&td->len)) {
+        error = -EINVAL;
+        goto err_numparse;
+    }
+    
+    b->bi_bdev = dev->blkdev;
+    b->bi_end_io = alloc_bio_end_fnc;
+
+    p = virt_to_page(argv[4]);
+    bcnt = (ulong)(td->len & 0xFFFFFFFF); /*test code, that's why this is acceptable*/
+    vec_off = offset_in_page(argv[4]);
+
+    printk("b4 bio_add_page (argv[4]: %s)\n", argv[4]);
+    if (bio_add_page(b, p, bcnt, vec_off) < bcnt) {
+        printk(KERN_ERR "update_node bio could not add page worth %lu bytes of data\n", bcnt);
+        error = -ENOMEM;
+        goto err_page_add;
+    }
+
+    submit_bio(WRITE, b);
+    log_cmd("update_node");
+    return len;
+
+err_page_add:
+err_numparse:
+    dealloc_bio(b);
+err_bio_alloc:
+err_arg_input:
+    kfree(pstr);
+err:
+    printk(KERN_ERR "update_node sysfs call failed\n");
+    return error;
+}
+static struct aoetest_sysfs_entry aoetest_sysfs_updatenode = __ATTR(update_node, 0644, NULL, store_updatenode);
+
+static ssize_t store_removenode(struct aoedev *dev, const char *page, size_t len)
+{
+    /*arg parse stuff*/
+    char *pstr = NULL;
+    char *argv[16];
+    int numargs;
+    /*call-specific*/
+    struct bio *b = NULL;
+    struct tree_iface_data *td = NULL;
+    struct page *p;
+    ulong bcnt, vec_off;
+    ssize_t error;
+
+    printk("store_removenode called\n");
+    numargs = __parse_args(page,len,&pstr,argv,nelem(argv));
+    if (numargs < 0) {
+        printk(KERN_ERR "failed to allocate buffer for parsing input string\n");
+        error = -ENOMEM;
+        goto err;
+    } else if (numargs != 2) {
+        printk(KERN_ERR "expected 2 arguments: tid nid\n");
+        error = -EINVAL;
+        goto err_arg_input;
+    }
+
+    b = alloc_bio(TREE_BIO);
+    if (!b) {
+        printk("aoetest - removenode: failed to allocate a bio\n");
+        error = -ENOMEM;
+        goto err_bio_alloc;
+    }
+
+    td = (struct tree_iface_data *) b->bi_treecmd;
+    
+    /*I could convert the value straight into the treecmd 
+      struct but I'd get unused result warnings...*/
+    td->cmd = AOECMD_REMOVENODE;
+    if (kstrtou64(argv[0],10,&td->tid)){
+        error = -EINVAL;
+        goto err_numparse;
+    }
+    if (kstrtou64(argv[1],10,&td->nid)){
+        error = -EINVAL;
+        goto err_numparse;
+    }
+    
+    b->bi_bdev = dev->blkdev;
+    b->bi_end_io = alloc_bio_end_fnc;
+
+    p = virt_to_page(&empty_read_buffer);
+    bcnt = sizeof(empty_read_buffer);
+    vec_off = offset_in_page(&empty_read_buffer);
+
+    printk("b4 bio_add_page\n");
+    if (bio_add_page(b, p, bcnt, vec_off) < bcnt) {
+        printk(KERN_ERR "remove_node bio could not add page worth %lu bytes of data\n", bcnt);
+        error = -ENOMEM;
+        goto err_page_add;
+    }
+
+    submit_bio(WRITE, b);
+    log_cmd("remove_node");
+    return len;
+
+err_page_add:
+err_numparse:
+    dealloc_bio(b);
+err_bio_alloc:
+err_arg_input:
+    kfree(pstr);
+err:
+    printk(KERN_ERR "remove_node sysfs call failed\n");
+    return error;
+}
+static struct aoetest_sysfs_entry aoetest_sysfs_removenode = __ATTR(remove_node, 0644, NULL, store_removenode);
+
+static ssize_t store_readnode(struct aoedev *dev, const char *page, size_t len)
+{
+    /*arg parse stuff*/
+    char *pstr = NULL;
+    char *argv[16];
+    int numargs;
+    /*call-specific*/
+    struct bio *b = NULL;
+    struct tree_iface_data *td = NULL;
+    struct page *p;
+    ulong bcnt, vec_off;
+    ssize_t error;
+    u8 *buffer = NULL;
+
+    printk("store_readnode called\n");
+    numargs = __parse_args(page,len,&pstr,argv,nelem(argv));
+    if (numargs < 0) {
+        printk(KERN_ERR "failed to allocate buffer for parsing input string\n");
+        error = -ENOMEM;
+        goto err;
+    } else if (numargs != 4) { /*ARGS: tid nid off len*/
+        printk(KERN_ERR "expected 4 arguments (tid,nid,off,len)\n");
+        error = -EINVAL;
+        goto err_arg_input;
+    }
+
+    b = alloc_bio(TREE_BIO);
+    if (!b) {
+        printk("\tfailed to allocate a bio\n");
+        error = -ENOMEM;
+        goto err_bio_alloc;
+    }
+    td = (struct tree_iface_data *) b->bi_treecmd;
+
+    
+    td->cmd = AOECMD_READNODE;
+    if (kstrtou64(argv[0],10,&td->tid)) {
+        error = -EINVAL;
+        printk(KERN_ERR "\tfailed to convert input to u64\n");
+        goto err_numparse;
+    }
+    if (kstrtou64(argv[1],10,&td->nid)) {
+        error = -EINVAL;
+        printk(KERN_ERR "\tfailed to convert input to u64\n");
+        goto err_numparse;
+    }
+    if (kstrtou64(argv[2],10,&td->off)) {
+        error = -EINVAL;
+        printk(KERN_ERR "\tfailed to convert input to u64\n");
+        goto err_numparse;
+    }
+    if (kstrtou64(argv[3],10,&td->len)) {
+        error = -EINVAL;
+        printk(KERN_ERR "\tfailed to convert input to u64\n");
+        goto err_numparse;
+    }
+
+    buffer = kmalloc(len, GFP_ATOMIC);
+    if (!buffer) {
+        error = -ENOMEM;
+        printk(KERN_ERR "\tfailed to allocate read buffer\n");
+        goto err_buffer_alloc;
+    }
+    
+    b->bi_bdev = dev->blkdev;
+    b->bi_end_io = alloc_bio_end_fnc;
+
+    p = virt_to_page(buffer);
+    bcnt = (ulong)(td->len & 0xFFFFFFFF);
+    vec_off = offset_in_page(buffer);
+
+    printk("b4 bio_add_page\n");
+    if (bio_add_page(b, p, bcnt, vec_off) < bcnt) {
+        printk(KERN_ERR "read_node bio could not add page worth %lu bytes of data\n", bcnt);
+        error = -ENOMEM;
+        goto err_page_add;
+    }
+
+    submit_bio(WRITE, b);
+    log_cmd("read_node");
+    return len;
+
+err_page_add:
+    kfree(buffer);
+err_buffer_alloc:
+err_numparse:
+    dealloc_bio(b);
+err_bio_alloc:
+err_arg_input:
+    kfree(pstr);
+err:
+    printk(KERN_ERR "read_node sysfs call failed\n");
+    return error;
+}
+static struct aoetest_sysfs_entry aoetest_sysfs_readnode = __ATTR(read_node, 0644, NULL, store_readnode);
 
 /*device-level attrs*/
 static struct attribute *aoetest_ktype_device_attrs[] = {
     &aoetest_sysfs_devpath.attr,
     &aoetest_sysfs_createtree.attr,
+    &aoetest_sysfs_removetree.attr,
     &aoetest_sysfs_insertnode.attr,
+    &aoetest_sysfs_updatenode.attr,
+    &aoetest_sysfs_removenode.attr,
+    &aoetest_sysfs_readnode.attr,
     NULL,
 };
 

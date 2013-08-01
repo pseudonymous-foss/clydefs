@@ -104,6 +104,7 @@ static __always_inline u64 node_high_key(struct btn *node)
  */
 static __always_inline struct tree *get_tree(u64 tid)
 {
+    
     struct tree *c = tree_list_head;
     while (c != NULL) {
         if ( c->tid == tid)
@@ -208,8 +209,7 @@ alloc_keys_err:
     *node_ref = NULL;
 alloc_err:
     printk("make_node allocation of new node failed!\n");
-    BUG();
-    return -ENOMEM;/*FIXME: remove the BUG() call and ensure users protect against failed allocations*/
+    return -ENOMEM;
 }
 
 
@@ -227,8 +227,7 @@ alloc_err:
     CLYDE_ASSERT(block_ref != NULL);
     CLYDE_ASSERT(*block_ref == NULL); /*ensure we're not losing a ptr*/
 
-    /*FIXME: am I not just overwriting a ptr which won't be set on function exit ? I think so.*/
-    //alloc leaf
+    /*alloc leaf*/
     *block_ref = (struct btd*)kmalloc(sizeof(struct btd), GFP_ATOMIC);
     if(!*block_ref)
         goto err_alloc;
@@ -267,29 +266,36 @@ u64 blinktree_create(u8 k)
     t = (struct tree*)kmalloc(sizeof(struct tree), GFP_ATOMIC);
     if (!t) {
         pr_warn("blinktree_create failed to allocate memory\n");
-        BUG();
+        goto err_tree_alloc;
     }
     t->k = k;
+
+    if (make_node(t, &n, acquire_nid(), LEAF_NODE)){
+        pr_warn("Failed allocating a root node for the creation of a new tree\n");
+        goto err_node_alloc;
+    }
+    t->root = n;
 
     TREE_LIST_LOCK();
     t->tid = tid_counter++;
     /*root is a leaf by virtue of being the first and only node*/
-    if (make_node(t, &n, acquire_nid(), LEAF_NODE)){
-        pr_warn("Failed allocating a root node for the creation of a new tree\n");
-        return 0;
-    }
-    t->root = n;
 
     if (unlikely(tree_list_head == NULL)) {
         t->nxt = NULL;
+        smp_mb(); /*because blinktree_remove is lockless*/
         tree_list_head = t;
     } else {
         t->nxt = tree_list_head->nxt;
+        smp_mb(); /*because blinktree_remove is lockless*/
         tree_list_head->nxt = t;
     }
     TREE_LIST_UNLOCK();
 
-    return t->tid;
+    return t->tid; /*success*/
+err_node_alloc:
+    kfree(t);
+err_tree_alloc:
+    return 0;
 }
 
 /** 
@@ -303,8 +309,23 @@ int blinktree_remove(u64 tid)
     /* 
         Unlink tree, clean when not busy, may need a worker counter indicating
         how many threads work on the tree at any moment
-    */ 
-    pr_warn("blinktree_remove not implemented yet!\n");
+    */
+    struct tree *c, *p = NULL;
+    pr_warn("blinktree_remove not yet implemented _properly_\n");
+
+    c = tree_list_head;
+    while(c != NULL) {
+        if(c->tid == tid) {
+            if (p) {
+                p->nxt = c->nxt;
+                smp_mb();
+            }
+            /*FIXME: wait for all workers to exit the tree, then begin cleaning it all up*/
+            return 0;
+        }
+        p = c;
+        c = c->nxt;
+    }
     return -ENOENT;
 }
 
@@ -785,7 +806,6 @@ static __always_inline struct btd *blinktree_scanleaf(struct btn *node, u64 key)
     }
 
     /*no child with matching key found in 'node' or its siblings to the right*/
-    //WARN(1, "blinktree_scanleaf: scanned leaf node, found no record for key!\n");
     return NULL; 
 }
 
@@ -1010,7 +1030,8 @@ int blinktree_node_insert(u64 tid, u64 nid, void *data)
     tree = get_tree(tid);
     if (unlikely(tree == NULL)) {
         /*No tree found by id 'tid'.*/
-        return -ENOENT;
+        retval -ENOENT;
+        goto out;
     }
     CLYDE_ASSERT(tree->root != NULL);
     CLYDE_ASSERT(data != NULL);
@@ -1112,7 +1133,8 @@ split_or_done:
             if (make_node(tree, &root, acquire_nid(), INTERNAL_NODE)) {
                 /*failed to create new node*/
                 pr_warn("blinktree_insert: Failed to create new root node, presumably allocation failed.\n");
-                BUG();
+                retval = -ENOMEM;
+                goto out;
             }
             printk("\t\tbefore locking root->lock\n");
             NODE_LOCK(root); /*required by node_insert, even if not strictly necessary*/

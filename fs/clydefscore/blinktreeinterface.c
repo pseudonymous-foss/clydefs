@@ -42,8 +42,9 @@ static int blinktreeinterface_node_read(u64 tid, u64 nid, u64 offset, u64 len, v
 
     if ((offset < db->num_bytes) && (len <= (db->num_bytes - offset))) {
         /*read request within the 1MB data range*/
-        u8 *start = ((u8*)data) + offset;
-        memcpy(data, start, len);
+        u8 *data_block = ((u8*)db->data) + offset;
+        u8 *buf = ((u8*)data);
+        memcpy(buf, data_block, len);
         return 0;
     } else {
         pr_warn("CANNOT SUPPORT READS OUTSIDE THE RANGE OF 1MB\n");
@@ -61,8 +62,9 @@ static int blinktreeinterface_node_write(u64 tid, u64 nid, u64 offset, u64 len, 
 
     if ((offset < db->num_bytes) && (len <= (db->num_bytes - offset))) {
         /*read request within the 1MB data range*/
-        u8 *start = ((u8*)data) + offset;
-        memcpy(start, data, len);
+        u8 *buf = ((u8*)data);
+        u8 *data_block = ((u8*)db->data) + offset;
+        memcpy(data_block, buf, len);
         return 0;
     } else {
         pr_warn("CANNOT SUPPORT READS OUTSIDE THE RANGE OF 1MB\n");
