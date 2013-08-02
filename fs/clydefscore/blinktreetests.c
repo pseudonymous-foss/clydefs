@@ -85,7 +85,7 @@ static __always_inline void ensure_all_locks_released(u64 tid, struct stack *s)
     dbg_blinktree_getnodes(tid, s);
     while (clydefscore_stack_size(s)) {
         n = clydefscore_stack_pop(s);
-        TEST_ASSERT_TRUE(spin_is_locked(n->lock) == 0, "Lock was not released!\n");
+        TEST_ASSERT_TRUE(spin_is_locked(&(n->lock)) == 0, "Lock was not released!\n");
         i++;
     }
     printk("/////////////////////////////// %d locks checked\n",i);

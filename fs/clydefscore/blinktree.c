@@ -62,12 +62,12 @@
 
 #define NODE_LOCK(n) \
     do { \
-        if(spin_is_locked((n)->lock)) \
+        if(spin_is_locked(&(n)->lock)) \
             pr_warn("encountered a lock, waiting...\n"); \
-        spin_lock((n)->lock); \
+        spin_lock(&(n)->lock); \
     } while(0);
 
-#define NODE_UNLOCK(n) spin_unlock((n)->lock)
+#define NODE_UNLOCK(n) spin_unlock(&(n)->lock)
 #define TREE_LIST_LOCK() spin_lock(&t_list_lock);
 #define TREE_LIST_UNLOCK() spin_unlock(&t_list_lock);
 
@@ -76,12 +76,16 @@ STATIC u8 tid_counter = 1;
 STATIC DEFINE_SPINLOCK(t_list_lock);
 unsigned long t_list_lock_flags;
 
-
 #ifdef DBG_FUNCS
 static void blinktree_print_node(struct btn *node, int depth);
 #else
 #define blinktree_print_node(x, y) ;
 #endif
+
+static __always_inline int node_is_locked(struct btn *node)
+{
+    return spin_is_locked(&(node->lock));
+}
 
 /**
  * Return the node's high key. 
@@ -154,64 +158,61 @@ static __always_inline u64 acquire_nid(void)
     return v; /*FIXME: not implemented*/
 }
 
-/* 
- * Allocate a new tree node
- * --- 
- * node_ref: pointer to the pointer which will hold a reference to the allocation, if successful
- * nid: the nid for the new node
- * is_leaf: is this node a leaf node ? (non-zero => yes!) 
- * --- 
- * return: 
- *   -ENOMEM if node allocation fails
- *   0 otherwise (on success)
+/** 
+ * Allocate a new tree node. 
+ * @param tree the tree to which this node will belong 
+ * @param node_ref pointer to the pointer which will hold a reference to the allocation, if successful
+ * @param nid the node identifier given the new node 
+ * @param is_leaf whether this node is to be a leaf node or not. 
+ * @return -ENOMEM if allocation fails, 0 otherwise (success) 
  */
 static noinline int make_node(struct tree *tree, struct btn **node_ref, u64 nid, u8 is_leaf){
+    struct btn *n = NULL;
     CLYDE_ASSERT(tree != NULL);
     CLYDE_ASSERT(node_ref != NULL);
     CLYDE_ASSERT(*node_ref == NULL); /*ensure we're not losing a ptr*/
     
-    *node_ref = (struct btn*)kmalloc(sizeof(struct btn), GFP_ATOMIC);
-    if (!*node_ref) {
-        goto alloc_err;
+    n = (struct btn*)kmem_cache_alloc(tree->node_cache, GFP_ATOMIC);
+    if (!n) {
+        pr_warn("make_node: failed to allocate node\n");
+        goto err_alloc;
     }
+    /*
+    Allocation is large enough to contain both struct and 2k+1 entries, 
+    where each entry is 1 key and 1 child pointer. 
+     
+    I'll lay out the memory as follows: 
+    |  struct btn  |  2k+1 ptrs  |  2k+1 keys  | 
+    ^ node_offset  ^ key_offset  ^ ptr_offset
+    */
+    (*node_ref) = n;                                                /*node_offset*/
+    n->child_keys = (u64*)(n+1);                                    /*key_offset*/
+    n->child_nodes = (void**)(n->child_keys + 1 + (2 * tree->k));   /*node_offset*/
 
-    /*Alloc for 2k entries +1 to handle the temporary overflow leading to a node split*/
-    (*node_ref)->child_keys = (u64*)kmalloc(sizeof(u64) * ((tree->k)*2+1), GFP_ATOMIC);
-    if (!((*node_ref)->child_keys)) {
-        printk("failed to allocate node's child_keys array, releasing resources\n");
-        goto alloc_keys_err;
-    }
-    (*node_ref)->child_nodes = (void**)kmalloc(sizeof(void*) * ((tree->k)*2+1), GFP_ATOMIC);
-    if (!((*node_ref)->child_nodes)) {
-        printk("failed to allocate node's child_nodes array, releasing resources\n");
-        goto alloc_nodes_err;
-    }
 
-    (*node_ref)->lock = (spinlock_t*)kmalloc(sizeof(spinlock_t), GFP_ATOMIC);
-    if (!((*node_ref)->lock)) {
-        printk("failed to allocate node's spinlock, releasing resources\n");
-        goto alloc_spinlock_err;
-    }
-
-    (*node_ref)->nid = nid;
-    (*node_ref)->sibling = NULL;
-    (*node_ref)->is_leaf = is_leaf;
-    (*node_ref)->numkeys = 0;
-    spin_lock_init((*node_ref)->lock);
+    n->nid = nid;
+    n->sibling = NULL;
+    n->is_leaf = is_leaf;
+    n->numkeys = 0;
+    spin_lock_init(&(*node_ref)->lock);
     return 0;
 
-alloc_spinlock_err:
-    kfree((*node_ref)->child_nodes);
-alloc_nodes_err:
-    kfree((*node_ref)->child_keys);
-alloc_keys_err:
-    kfree(*node_ref);
-    *node_ref = NULL;
-alloc_err:
-    printk("make_node allocation of new node failed!\n");
+err_alloc:
     return -ENOMEM;
 }
 
+#if 0 /*will become useful once blinktree_remove actually cleans the tree*/
+/** 
+ * Free the tree node memory.
+ * @param tree the tree to which the node belongs
+ * @param node the node to release. 
+ * @post node is a dangling ptr 
+ */
+static noinline void free_node(struct tree *tree, struct btn *node)
+{
+    kmem_cache_free(tree->node_cache,node);
+}
+#endif
 
 /* 
  * Allocate a data block of a variable size of bytes 
@@ -263,12 +264,24 @@ u64 blinktree_create(u8 k)
 {
     struct tree *t = NULL;
     struct btn *n = NULL;
+    size_t node_size;
     t = (struct tree*)kmalloc(sizeof(struct tree), GFP_ATOMIC);
     if (!t) {
         pr_warn("blinktree_create failed to allocate memory\n");
         goto err_tree_alloc;
     }
     t->k = k;
+    t->node_cache = NULL;
+
+    node_size = sizeof(struct btn) +            /*node struct itself*/
+        sizeof(u64) * ((t->k)*2+1) +            /*k key values*/
+        sizeof(void*) * ((t->k)*2+1);           /*k pointers to other nodes*/
+
+    t->node_cache = kmem_cache_create("btn", node_size, 0, 0, NULL);
+    if (!t->node_cache) {
+        pr_warn("blinktree_create: failed to allocate memcache for k=%u tree\n", k);
+        goto err_cache_alloc;
+    }
 
     if (make_node(t, &n, acquire_nid(), LEAF_NODE)){
         pr_warn("Failed allocating a root node for the creation of a new tree\n");
@@ -293,6 +306,8 @@ u64 blinktree_create(u8 k)
 
     return t->tid; /*success*/
 err_node_alloc:
+    kmem_cache_destroy(t->node_cache);
+err_cache_alloc:
     kfree(t);
 err_tree_alloc:
     return 0;
@@ -321,6 +336,7 @@ int blinktree_remove(u64 tid)
                 smp_mb();
             }
             /*FIXME: wait for all workers to exit the tree, then begin cleaning it all up*/
+            /*also clean up tree struct itself, kmem_cache and all*/
             return 0;
         }
         p = c;
@@ -450,7 +466,7 @@ static __always_inline void node_insert_entry(struct btn *node, u64 key, void *v
       when no one has a lock on the node.
       FIXME how to check that this thread owns the lock ?
     */
-    CLYDE_ASSERT(spin_is_locked(node->lock));
+    CLYDE_ASSERT(node_is_locked(node));
 
     if ( node->numkeys == 0 ) {
         ndx = 0; /*where to insert entry*/
@@ -530,7 +546,7 @@ static __always_inline int node_remove_entry(struct btn *node, u64 key)
 
     CLYDE_ASSERT(i != NO_SUCH_ENTRY);
     CLYDE_ASSERT(entry_ndx < node->numkeys);
-    CLYDE_ASSERT(spin_is_locked(node->lock));
+    CLYDE_ASSERT(node_is_locked(node));
     
     /*shifts elements to the left to fill the void of the deleted element while 
       maintaining latch-free reading*/
@@ -587,7 +603,7 @@ static __always_inline struct btn *node_split(struct tree *tree, struct btn *nod
     CLYDE_ASSERT(tree != NULL);
     CLYDE_ASSERT(node != NULL);
     /*'node' need to be protected from modications while we copy data from it*/
-    CLYDE_ASSERT( spin_is_locked(node->lock) );
+    CLYDE_ASSERT( node_is_locked(node) );
     /*ensure splitting is only done when there's enough nodes to 
       avoid subsequent compaction*/
     CLYDE_ASSERT( node->numkeys >= (tree->k*2 + 1) );
@@ -595,7 +611,7 @@ static __always_inline struct btn *node_split(struct tree *tree, struct btn *nod
     printk("\t\tbefore make_node (node_right points to: %p)\n", node_right);
     if (make_node(tree, &node_right, acquire_nid(), node->is_leaf))
         return NULL;
-    printk("\t\tafter make_node (node_right points to: %p), (node_right->lock points to %p)\n", node_right, node_right->lock);
+    printk("\t\tafter make_node (node_right points to: %p), (node_right->lock points to %p)\n", node_right, &node_right->lock);
     printk("\t\tbefore memcopying node elements\n");
     printk("\t\tbefore splitting node:\n\t\t\t");
     blinktree_print_node(node,0);
@@ -607,7 +623,7 @@ static __always_inline struct btn *node_split(struct tree *tree, struct btn *nod
     memcpy(node_right->child_nodes, 
            &node->child_nodes[tree->k+1], 
            sizeof(void*)*tree->k);
-    printk("\t\t_after_ memcpy - node_right->lock points to %p\n", node_right->lock);
+    printk("\t\t_after_ memcpy - node_right->lock points to %p\n", &node_right->lock);
 
     printk("\t\tbefore locking node_right splinlock\n");
     /*when splitting we need to insert a new entry for the 
@@ -849,7 +865,7 @@ static __always_inline void move_right(struct btn **node, u64 key)
 
     CLYDE_ASSERT(node != NULL);
     CLYDE_ASSERT((*node) != NULL);
-    CLYDE_ASSERT(spin_is_locked((*node)->lock));
+    CLYDE_ASSERT(node_is_locked(*node));
 
     printk("inside move_right - after assert checks\n");
 
@@ -915,9 +931,9 @@ static __always_inline struct btn* patch_parents_children_entries(struct btn *pa
    u8 nl_entry_ndx;
 
    /*Checking preconditions*/
-   CLYDE_ASSERT(spin_is_locked(parent_start->lock));
-   CLYDE_ASSERT(spin_is_locked(node_left->lock));
-   CLYDE_ASSERT(spin_is_locked(node_right->lock));
+   CLYDE_ASSERT(node_is_locked(parent_start));
+   CLYDE_ASSERT(node_is_locked(node_left));
+   CLYDE_ASSERT(node_is_locked(node_right));
    printk("inside patch_parents_children_entries\n\t\tbefore assignments\n");
 
    node_parent = NULL;
@@ -1030,7 +1046,7 @@ int blinktree_node_insert(u64 tid, u64 nid, void *data)
     tree = get_tree(tid);
     if (unlikely(tree == NULL)) {
         /*No tree found by id 'tid'.*/
-        retval -ENOENT;
+        retval = -ENOENT;
         goto out;
     }
     CLYDE_ASSERT(tree->root != NULL);
@@ -1051,7 +1067,7 @@ int blinktree_node_insert(u64 tid, u64 nid, void *data)
         goto out;
     }
 
-    printk("after find_leaf (is lock contended?: %d)\n", spin_is_locked(node->lock));
+    printk("after find_leaf (is lock contended?: %d)\n", node_is_locked(node));
     NODE_LOCK(node);
     printk("before move_right\n");
     move_right(&node,nid);
@@ -1223,7 +1239,7 @@ int blinktree_node_remove(u64 tid, u64 nid)
         goto out;
     }
 
-    printk("after find_leaf (is lock contended?: %d)\n", spin_is_locked(node->lock));
+    printk("after find_leaf (is lock contended?: %d)\n", node_is_locked(node));
     NODE_LOCK(node);
     printk("before move_right\n");
     move_right(&node,nid);

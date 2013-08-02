@@ -26,7 +26,7 @@ struct btn{
     u64 *child_keys;
     void **child_nodes;
 
-    spinlock_t *lock;
+    spinlock_t lock;
 };
 
 /** 
@@ -55,6 +55,7 @@ struct tree {
      */ 
     u8 k;
     struct tree *nxt;
+    struct kmem_cache *node_cache;
 };
 
 u64 blinktree_create(u8 k);
