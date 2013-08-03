@@ -2,6 +2,10 @@
 #define __CLYDEFS_IO_H
 #include <linux/types.h>
 
+/*presently block size set corresponds to 512bytes*/
+#define BLOCK_SIZE_SHIFT 9
+#define BLOCK_SIZE_BYTES 1ul << BLOCK_SIZE_SHIFT
+
 enum BIO_TYPE{
     ATA_BIO,
     TREE_BIO,
@@ -20,20 +24,20 @@ struct tree_iface_data {
     u64 err;
 };
 
-int clydefs_io_init(void);
+int cfsio_init(void);
 
-void clydefs_io_exit(void);
+void cfsio_exit(void);
 
-int clydefs_io_create_tree(u64 *ret_tid);
+int cfsio_create_tree_sync(u64 *ret_tid);
 
-void clydefs_io_remove_tree(u64 tid);
+int cfsio_remove_tree_sync(u64 tid);
 
-u64 clydefs_io_insert(u64 tid, u64 len, void *data);
+int cfsio_insert_node_sync(u64 *ret_nid, u64 tid);
 
-void clydefs_io_remove(u64 tid, u64 nid);
+int cfsio_remove_node(u64 tid, u64 nid);
 
-void clydefs_io_update(u64 tid, u64 nid, u64 offset, u64 len, void *data);
+int cfsio_update_node(bio_end_io_t on_complete, u64 tid, u64 nid, u64 offset, u64 len, void *data);
 
-void clydefs_io_read(u64 tid, u64 nid, u64 offset, u64 len, void *data);
+int cfsio_read_node(u64 tid, u64 nid, u64 offset, u64 len, void *data);
 
 #endif //__CLYDEFS_IO_H
