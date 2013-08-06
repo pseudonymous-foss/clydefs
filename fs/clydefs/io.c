@@ -4,8 +4,6 @@
 #include <linux/pagemap.h>
 #include "io.h"
 
-
-
 /* 
     Status
  
@@ -31,12 +29,23 @@ struct submit_syncbio_data {
 	int error;
 };
 
-struct cfs_io_end {
-    /**number of bios associated with this operation*/
-    atomic_t nbio;
-    /**completed bios so far*/ 
-    atomic_t cbio;
 
+
+/** 
+ * Contains data related to the request. 
+ */ 
+struct cfsio_rq {
+    /** number of bios registered as completed */
+    atomic_t bio_completed;
+    /** The fields of the request directly available to the
+     *  end_io functions */
+    struct cfsio_rq_cb_data cb_data;
+    /** is set only when all requests have been counted. To
+     *  prevent premature completion before the last requests
+     *  have been issued. */
+    atomic_t initialised;
+    /** function to call once the request is fully completed */
+    cfsio_on_endio_t endio_cb;
 };
 
 enum AOE_CMD {
@@ -49,11 +58,14 @@ enum AOE_CMD {
     AOECMD_REMOVENODE,          /*remove the node and associated data*/
 };
 
-static struct kmem_cache *tree_iface_pool = NULL;
+static struct kmem_cache *cfsio_rqfrag_pool = NULL;
+static struct kmem_cache *cfsio_rq_pool = NULL;
 static struct bio_set *bio_pool = NULL;
 
 /*maximum number of pages*/
 #define BIO_MAX_PAGES_PER_CHUNK (BIO_MAX_SECTORS >> (PAGE_SHIFT - BLOCK_SIZE_SHIFT))
+
+#define tbio_get_frag(b) container_of((b)->bi_treecmd, struct cfsio_rq_frag, td);
 
 /* 
   several bio's do not send data apart from the tree 
@@ -62,7 +74,68 @@ static struct bio_set *bio_pool = NULL;
 static u8 _nilbuf_data = 255;
 struct bio_page_data nilbuf;
 
-//static void __prep_bio_page_data(bio_page_data *bpd, void * data)
+static void __free_tbio_fragments(struct cfsio_rq *rq);
+
+/** 
+ * Bring request structure into a valid state. 
+ * @description this function sets relevant values in cfsio_rq 
+ *              itself and its callback structure to ensure a
+ *              valid state.
+ */ 
+static void __cfsio_rq_init(struct cfsio_rq *rq)
+{
+    INIT_LIST_HEAD(&rq->cb_data.lst);
+    spin_lock_init(&rq->cb_data.lst_lock);
+}
+
+/** 
+ * called whenever a single bio part of a cfsio request
+ * completed.
+ */
+static void fragment_end_io(struct bio *b, int error) {
+    struct tree_iface_data *td;
+    struct cfsio_rq *req;
+    struct cfsio_rq_frag *frag;
+
+    BUG_ON(b->bi_treecmd == NULL);
+    BUG_ON(b->bi_private == NULL);
+
+    td = (struct tree_iface_data*)b->bi_treecmd;
+    req = (struct cfsio_rq *)b->bi_private;
+    
+    /*Set the fields required for a valid object state*/
+    req->cb_data.error |= error;
+
+    /*add fragment to the list of fragments making up the request*/
+    spin_lock(&req->cb_data.lst_lock);
+    frag = tbio_get_frag(b);
+    list_add(&req->cb_data.lst, &frag->lst);
+    spin_unlock(&req->cb_data.lst_lock);
+
+    /*finally, mark this fragment as completed*/
+    atomic_inc(&req->bio_completed);
+           
+    if (atomic_read(&req->initialised) == 0) {
+        /*this bio completed before all bios of the 
+          request were dispatched, nothing further to do*/
+        return;
+    }
+    
+    if (atomic_add_return(1, &req->bio_completed) == atomic_read(&req->cb_data.bio_num)) {
+        /*all bio's completed*/
+        if (atomic_add_return(1, &req->initialised) != 2) {
+            return; /*someone else beat us to it*/
+        }
+        /*holding the last bio of the request*/
+
+        /*invoke user callback*/
+        req->endio_cb(&req->cb_data,req->cb_data.error);
+
+        /*request finished, free fragments and request*/
+        __free_tbio_fragments(req);
+        kmem_cache_free(cfsio_rq_pool, req);
+    }
+}
 
 /** 
  * Allocate bios for both ATA and TREE commands. 
@@ -88,22 +161,22 @@ static struct bio *__alloc_bio(enum BIO_TYPE bt)
     bio_get(b); /*ensure bio won't disappear on us*/
 
     if (bt == TREE_BIO) {
-        struct tree_iface_data *td = NULL;
-        td = kmem_cache_alloc(tree_iface_pool, GFP_ATOMIC);
-        if (!td)
-            goto err_alloc_tree_iface;
-        memset(td, 0, sizeof *td);
+        struct cfsio_rq_frag *frag = NULL;
+        frag = kmem_cache_alloc(cfsio_rqfrag_pool, GFP_ATOMIC);
+        if (!frag)
+            goto err_alloc_fragment;
+        memset(frag, 0, sizeof *frag);
 
-        b->bi_treecmd = td;
-
+        b->bi_treecmd = &frag->td;
+        b->bi_private = NULL;
         b->bi_sector = 0; /*using td->off to mark offsets for read/write*/
-        
     } else {
         b->bi_treecmd = NULL;
+        b->bi_private = NULL;
     }
     return b;
 
-err_alloc_tree_iface:
+err_alloc_fragment:
     bio_put(b);
 err_alloc_bio:
     return NULL;
@@ -120,11 +193,34 @@ static void __dealloc_bio(struct bio *b)
     BUG_ON( atomic_read(&b->bi_cnt) != 1 );
 
     if (b->bi_treecmd) { /*assume tree bio*/
-        kmem_cache_free(tree_iface_pool, b->bi_treecmd);
+        struct cfsio_rq_frag *frag = tbio_get_frag(b);
+        kmem_cache_free(cfsio_rqfrag_pool, frag);
         b->bi_treecmd = NULL;
+        b->bi_private = NULL;
     }
-
     bio_put(b);
+}
+
+/** 
+ * free all fragments associated a particular request. 
+ * @description used to free all memory used for the fragments 
+ *              associated a particular IO request.
+ * @param rq the request containing the fragments 
+ * @post all memory associated the request fragments has been 
+ *       freed.
+ */
+static void __free_tbio_fragments(struct cfsio_rq *rq)
+{
+    
+    struct cfsio_rq_frag *frag;
+    struct list_head *head, *pos, *nxt;
+
+    head = &rq->cb_data.lst;
+    list_for_each_safe(pos,nxt, head) {
+        frag = list_entry(pos, struct cfsio_rq_frag, lst);
+        list_del(pos);              /*unlink*/
+        __dealloc_bio(frag->b);     /*clean up bio & fragment memory use*/
+    }
 }
 
 /**
@@ -328,28 +424,20 @@ err_alloc_bio:
     return retval;
 }
 
-/** 
- *  update data in node
- * 
- *  @param tid the id of the tree containing the node
- *  @param nid the id of the node to update
- *  @param offset the offset, in bytes, to write the data
- *  @param len the length, in bytes, of the data to write
- *  @param data the data to write
- *  @description updates the node identified by nid in the tree
- *               identified by tid by writing the supplied data
- *               at the supplied offset in the node.
- */
-int cfsio_update_node(bio_end_io_t on_complete, u64 tid, u64 nid, u64 offset, u64 len, void *data) {
-
+static int cfsio_data_request(enum AOE_CMD cmd, int rw, cfsio_on_endio_t on_complete, 
+                              u64 tid, u64 nid, u64 offset, u64 len, void *data)
+{
     /* 
       Issues:
       * should bio allocation fail halfway in I'm in trouble.
       * investigate the BLOCK_SIZE / PAGE_SIZE issue (read comments @ top)
     */
     int retval;
-    struct bio *b;
+    struct bio *b = NULL;
+    struct cfsio_rq *req = NULL;
     u64 chunk_pages;
+    struct tree_iface_data *b_td;
+    u8 first_bio = 1;
     u8 *data_cur = data; /*ptr to what next page should contain*/
     /*total number of pages to transfer*/
     u64 pages_left = len >> PAGE_SHIFT; /*how many times len divides by PAGE_SIZE*/
@@ -359,8 +447,15 @@ int cfsio_update_node(bio_end_io_t on_complete, u64 tid, u64 nid, u64 offset, u6
         pages_left++;
     }
 
+    req = kmem_cache_alloc(cfsio_rq_pool, GFP_KERNEL);
+    if (!req) {
+        pr_err("Failed to allocate request structure\n");
+        retval = -ENOMEM;
+        goto err_alloc_req;
+    }
+
 next_chunk:
-    /*how many pages to transfer with this bio*/
+    b = NULL; b_td = NULL;
     chunk_pages = pages_left;
     if (chunk_pages > BIO_MAX_PAGES_PER_CHUNK) { /*FIXME; check this*/
         chunk_pages = BIO_MAX_PAGES_PER_CHUNK;
@@ -372,14 +467,32 @@ next_chunk:
         pr_warn("failed to allocate tree bio\n");
         retval = -ENOMEM;
         goto err_alloc_bio; /*FIXME that will not work here, we don't know how many bio's we'll issue*/
-    }    
+    }
+    /*offset/len is set per AoE fragment*/
+    b_td = (struct tree_iface_data *)b->bi_treecmd;
+    b_td->cmd = cmd;
+    b_td->tid = tid;
+    b_td->nid = nid;
+
+    if (first_bio) {
+        struct cfsio_rq_frag *f = NULL;
+        first_bio = 0;
+
+        /*initialise request structure and add this bio as the first element*/
+        __cfsio_rq_init(req);
+        req->cb_data.data = data;
+        req->cb_data.data_len = len;
+        req->endio_cb = on_complete;
+        f = tbio_get_frag(b);
+        list_add(&f->lst, &req->cb_data.lst);
+    }
 
     while(chunk_pages)
     { /*add all pages for this chunk, page-by-page*/
         int written, bio_page_size;
         
         /*if not the last page of the chunk, or not the last chunk at all, we are definitely writing a full page*/
-        if (likely(chunk_pages > 1 || (pages_left > chunk_pages)))
+        if (likely(chunk_pages > 1 || (pages_left)))
             bio_page_size = PAGE_SIZE;
         else {
             /*last page of last chunk being written*/
@@ -396,26 +509,53 @@ next_chunk:
             break;
         }
 
-        data_cur += PAGE_SIZE;
+        data_cur += bio_page_size;
         chunk_pages--;
     }
 
-    submit_bio(WRITE, b);
+    b->bi_end_io = fragment_end_io;
+    b->bi_private = req;
+    atomic_inc(&req->cb_data.bio_num);
+
+    submit_bio(rw, b);
 
     if(unlikely(chunk_pages)) {
         pages_left += chunk_pages; /*didn't finish our chunk, return leftovers*/
     }
-    if(pages_left)
+    if(pages_left) {
         goto next_chunk;
+    } else {
+        atomic_set(&req->initialised, 1);
+    }
 
 err_alloc_bio:
-out:
+err_alloc_req:
     return retval;
 }
 
+/** 
+ *  update data in node.
+ *  
+ *  @param on_complete function to call once all fragments of
+ *                     the command have completed.
+ *  @param tid the id of the tree containing the node
+ *  @param nid the id of the node to update
+ *  @param offset the offset, in bytes, to write the data
+ *  @param len the length, in bytes, of the data to write
+ *  @param data the data to write
+ *  @description updates the node identified by nid in the tree
+ *               identified by tid by writing the supplied data
+ *               at the supplied offset in the node.
+ */
+int cfsio_update_node(cfsio_on_endio_t on_complete, u64 tid, u64 nid, u64 offset, u64 len, void *data) {
+    return cfsio_data_request(AOECMD_UPDATENODE, WRITE, on_complete, tid, nid, offset, len, data);
+}
+
 /**
- * read node data
- * 
+ * read node data.
+ *  
+ * @param on_complete function to call once all fragments of the 
+ *                    command have completed.
  * @param tid the id of the tree containing the node
  * @param nid the id of the node to read from
  * @param offset the offset within the node from which to begin reading
@@ -425,8 +565,8 @@ out:
  * @todo what about reading past the end, what attempting reads 
  *       to non-existing sequences entirely.
  */
-int cfsio_read_node(u64 tid, u64 nid, u64 offset, u64 len, void *data) {
-    return;
+int cfsio_read_node(cfsio_on_endio_t on_complete, u64 tid, u64 nid, u64 offset, u64 len, void *data) {
+    return cfsio_data_request(AOECMD_READNODE, READ, on_complete, tid, nid, offset, len, data);
 }
 
 /** 
@@ -442,10 +582,16 @@ int cfsio_init(void) {
         goto err_alloc_biopool;
     }
 
-    tree_iface_pool = kmem_cache_create("tree_iface_data", sizeof (struct tree_iface_data), 0, 0, NULL);
-    if (tree_iface_pool == NULL) {
-        pr_err("Failed to allocate tree_iface_data pool\n");
-        goto err_alloc_treepool;
+    cfsio_rqfrag_pool = kmem_cache_create("cfsio_rq_frag", sizeof (struct cfsio_rq_frag), 0, 0, NULL);
+    if (cfsio_rqfrag_pool == NULL) {
+        pr_err("Failed to allocate cfsio_rqfrag_pool pool\n");
+        goto err_alloc_rqfragpool;
+    }
+
+    cfsio_rq_pool = kmem_cache_create("cfsio_rq", sizeof (struct cfsio_rq), 0, 0, NULL);
+    if (cfsio_rq_pool == NULL) {
+        pr_err("Failed to allocate request pool (cfsio_rq_pool)\n");
+        goto err_alloc_reqpool;
     }
     
     /*bogus values for bio's which send no additional data than 
@@ -455,7 +601,9 @@ int cfsio_init(void) {
     nilbuf.vec_off = offset_in_page(&_nilbuf_data);
 
     return 0;
-err_alloc_treepool:
+err_alloc_reqpool:
+    kmem_cache_destroy(cfsio_rqfrag_pool);
+err_alloc_rqfragpool:
     bioset_free(bio_pool);
 err_alloc_biopool:
     return -ENOMEM;
@@ -467,8 +615,10 @@ err_alloc_biopool:
  *              preparation for shutdown.
  */
 void cfsio_exit(void) {
-    if (tree_iface_pool)
-        kmem_cache_destroy(tree_iface_pool);
+    if (cfsio_rqfrag_pool)
+        kmem_cache_destroy(cfsio_rqfrag_pool);
+    if (cfsio_rq_pool)
+        kmem_cache_destroy(cfsio_rq_pool);
     if (bio_pool)
         bioset_free(bio_pool);
 }
