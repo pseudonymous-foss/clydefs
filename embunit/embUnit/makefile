@@ -28,5 +28,11 @@ TestSuite.o: TestSuite.h TestResult.h TestListener.h Test.h
 
 clean:
 	-$(RM) $(OBJS) $(TARGET)
+	-rm -rf *.o
+	-rm -rf *.ko
+	-rm -rf *.mod.c
+	-rm -rf .*.cmd
+	-rm modules.order
+	-rm .*.tmp
 
 .PHONY: clean all
