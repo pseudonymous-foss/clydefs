@@ -8,7 +8,7 @@
 #define TST_HDR printk("== %s called\n", __FUNCTION__)
 #define U64_MAX_VALUE 18446744073709551615ull
 #define TID_LEGAL_BOGUS_VAL (U64_MAX_VALUE-1)
-#define NID_LEGAL_BOGUS_VAL ((U64_MAX_VALUE-1)
+#define NID_LEGAL_BOGUS_VAL (U64_MAX_VALUE-1)
 
 extern char *dbg_dev;
 static struct block_device *dbg_dev_bd = NULL;
@@ -18,8 +18,15 @@ static u64 tid = U64_MAX_VALUE;
 static __always_inline void mktree(int *retval, u64 *tid)
 {
     *retval = cfsio_create_tree_sync(dbg_dev_bd, tid);
-    TEST_ASSERT_TRUE(*retval == 0, "error while attempting to create tree: %d\n", *retval);
-    TEST_ASSERT_TRUE(*tid != U64_MAX_VALUE, "tid value did not get set as a result of creating the tree\n");
+    TEST_ASSERT_TRUE(*retval == 0, "mktree: error while attempting to create tree: %d\n", *retval);
+    TEST_ASSERT_TRUE(*tid != U64_MAX_VALUE, "mktree: tid value did not get set as a result of creating the tree\n");
+}
+
+static __always_inline void mknode(int *retval, u64 tid, u64 *nid)
+{
+    *retval = cfsio_insert_node_sync(dbg_dev_bd, nid, tid);
+    TEST_ASSERT_TRUE(*retval == 0, "mknode: did not expect an error inserting a node into tree (%llu), error: %d\n", tid, *retval);
+    TEST_ASSERT_TRUE(*nid != U64_MAX_VALUE, "nid wasn't set as a result of inserting a new node\n");
 }
 
 static void set_up(void)
@@ -130,6 +137,42 @@ static void test_tree_insert_into_nonexisting_tree(void)
     );
 }
 
+static void test_tree_remove_node(void)
+{
+    int retval;
+    u64 nid = U64_MAX_VALUE;
+
+    TST_HDR;
+    mktree(&retval, &tid);
+    mknode(&retval, tid, &nid);
+
+    retval = cfsio_remove_node_sync(dbg_dev_bd, tid, nid);
+    TEST_ASSERT_TRUE(retval == 0, "did not expect an error removing recently inserted node\n");
+}
+
+static void test_tree_remove_node_from_nonexisting_tree(void)
+{
+    int retval;
+    u64 nid = NID_LEGAL_BOGUS_VAL;
+    tid = TID_LEGAL_BOGUS_VAL;
+    
+    TST_HDR;
+    retval = cfsio_remove_node_sync(dbg_dev_bd, tid, nid);
+    TEST_ASSERT_TRUE(retval & TERR_NO_SUCH_TREE, "expected to get TERR_NO_SUCH_TREE among the errors...\n");
+}
+
+static void test_tree_remove_nonexisting_node(void)
+{
+    int retval;
+    u64 nid = NID_LEGAL_BOGUS_VAL;
+
+    TST_HDR;
+    mktree(&retval, &tid);
+
+    retval = cfsio_remove_node_sync(dbg_dev_bd, tid, nid);
+    TEST_ASSERT_TRUE(retval & TERR_NO_SUCH_NODE, "expected TERR_NO_SUCH_NODE(%d) but got (%d)\n", TERR_NO_SUCH_NODE, retval);
+}
+
 TestRef io_tests(void)
 {
     dbg_dev_bd = blkdev_get_by_path(dbg_dev, FMODE_READ|FMODE_WRITE, NULL);
@@ -147,6 +190,9 @@ TestRef io_tests(void)
         TEST(test_tree_remove_nonexisting_tree),
         TEST(test_tree_insert),
         TEST(test_tree_insert_into_nonexisting_tree),
+        TEST(test_tree_remove_node),
+        TEST(test_tree_remove_node_from_nonexisting_tree),
+        TEST(test_tree_remove_nonexisting_node),
     };
     EMB_UNIT_TESTCALLER(iotest,"iotest",set_up,tear_down, fixtures);
 

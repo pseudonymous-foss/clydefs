@@ -547,8 +547,9 @@ static __always_inline int node_remove_entry(struct btn *node, u64 key)
     u8 i;
 
     i = entry_ndx = node_indexof_key(node,key);
-
-    CLYDE_ASSERT(i != NO_SUCH_ENTRY);
+    if (i == NO_SUCH_ENTRY) {
+        return NO_SUCH_ENTRY;
+    }
     CLYDE_ASSERT(entry_ndx < node->numkeys);
     CLYDE_ASSERT(node_is_locked(node));
     
@@ -1269,12 +1270,16 @@ int blinktree_node_remove(u64 tid, u64 nid)
     printk("before move_right\n");
     move_right(&node,nid);
     /*FIXME: if this entry is data, I'd need to free the associated structure */
-    node_remove_entry(node, nid);
+    if (node_remove_entry(node, nid) == NO_SUCH_ENTRY) {
+        NODE_UNLOCK(node);
+        retval = NO_SUCH_ENTRY;
+        goto out;
+    }
     NODE_UNLOCK(node);
 
-err_stack_alloc:
-    clydefscore_stack_free(&tree_path);
 out:
+    clydefscore_stack_free(&tree_path);
+err_stack_alloc:
     return retval;
 }
 

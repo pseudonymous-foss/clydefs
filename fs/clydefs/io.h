@@ -61,7 +61,7 @@ int cfsio_remove_tree_sync(struct block_device *bd, u64 tid);
 
 int cfsio_insert_node_sync(struct block_device *bd, u64 *ret_nid, u64 tid);
 
-int cfsio_remove_node(struct block_device *bd, u64 tid, u64 nid);
+int cfsio_remove_node_sync(struct block_device *bd, u64 tid, u64 nid);
 
 int cfsio_update_node(struct block_device *bd, cfsio_on_endio_t on_complete, u64 tid, u64 nid, u64 offset, u64 len, void *data);
 
