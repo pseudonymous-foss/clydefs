@@ -21,24 +21,32 @@ DEFINE_SPINLOCK(nidcnt_lock);
 static u64 nidcnt; /*nids are unsigned 64 bit values, atomic64_t uses signed values*/
 static __always_inline u64 nidcnt_inc_get(void)
 {
+    int reserved_val = 0;
     spin_lock(&nidcnt_lock);
-    return nidcnt++;
+    reserved_val = nidcnt++;
     spin_unlock(&nidcnt_lock);
+    return reserved_val;
 }
+
+#if 0
+/*wrong way to release a failed nid, hold a buffer of 10 spaces or something*/
 static __always_inline void nidcnt_dec(void)
 {
     spin_lock(&nidcnt_lock);
     nidcnt--;
     spin_unlock(&nidcnt_lock);
 }
+#endif
 
 static int blinktreeinterface_node_read(u64 tid, u64 nid, u64 offset, u64 len, void *data)
 { /*implements treeinterface->node_read*/
+    struct btd *db = NULL;
+    int retval;
 
     /*FIXME assuming single data node of 1MB size*/
-    struct btd * db = blinktree_lookup(tid,nid);
+    retval = blinktree_lookup(&db, tid, nid);
     if ( unlikely(db == NULL) )
-        return -ENOENT;
+        return retval;
 
     if ((offset < db->num_bytes) && (len <= (db->num_bytes - offset))) {
         /*read request within the 1MB data range*/
@@ -47,16 +55,18 @@ static int blinktreeinterface_node_read(u64 tid, u64 nid, u64 offset, u64 len, v
         memcpy(buf, data_block, len);
         return 0;
     } else {
-        pr_warn("CANNOT SUPPORT READS OUTSIDE THE RANGE OF 1MB\n");
+        printk("CANNOT SUPPORT READS OUTSIDE THE RANGE OF 1MB\n");
         BUG();
     }
 }
 
 static int blinktreeinterface_node_write(u64 tid, u64 nid, u64 offset, u64 len, void *data)
 { /*implements treeinterface->node_write*/
+    struct btd *db = NULL;
+    int retval;
 
     /*FIXME assuming single data node of 1MB size*/
-    struct btd * db = blinktree_lookup(tid,nid);
+    retval = blinktree_lookup(&db, tid, nid);
     if ( unlikely(db == NULL) )
         return -ENOENT;
 
@@ -67,7 +77,7 @@ static int blinktreeinterface_node_write(u64 tid, u64 nid, u64 offset, u64 len, 
         memcpy(data_block, buf, len);
         return 0;
     } else {
-        pr_warn("CANNOT SUPPORT READS OUTSIDE THE RANGE OF 1MB\n");
+        printk("CANNOT SUPPORT READS OUTSIDE THE RANGE OF 1MB\n");
         BUG();
     }
 }
@@ -96,7 +106,7 @@ static int blinktreeinterface_node_insert(u64 tid, u64 *nid)
     *nid = tmp;
     return 0; 
 err_insert:
-    nidcnt_dec();
+    /*nidcnt_dec(); -- FIXME, current implementation erroneous*/
     data_block_free(db);
 err_data_alloc:
     return retval;
