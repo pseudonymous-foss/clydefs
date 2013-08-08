@@ -1,8 +1,8 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/init.h>
 #include <linux/fs.h>
 #include <linux/pagemap.h>
+#include "io.h"
 
 #define CLYDEFS_MAGIC_IDENT 0x20140106
 
@@ -12,8 +12,6 @@ extern struct file_operations clydefs_dir_file_ops;
 struct dentry *clydefs_mount(struct file_system_type *fs_type, int flags,
                              const char *device_name, void *data);
 static int clydefs_fill_super(struct super_block *sb, void *data, int silent);
-static int __init clydefs_init(void);
-static void __exit clydefs_exit(void);
 
 /*Structures*/
 static struct file_system_type clydefs_fs_type;
@@ -59,14 +57,13 @@ static int clydefs_fill_super(struct super_block *sb, void *data, int silent)
     return 0;
 }
 
-static int __init clydefs_init(void)
+int super_init(void)
 {
     return register_filesystem(&clydefs_fs_type);
 }
 
-static void __exit clydefs_exit(void)
+void super_exit(void)
 {
-
     unregister_filesystem(&clydefs_fs_type);
 }
 
@@ -86,10 +83,4 @@ static struct file_system_type clydefs_fs_type = {
 static const struct super_operations clydefs_super_operations = {
     .statfs = simple_statfs,
 };
-
-
-module_init(clydefs_init);
-module_exit(clydefs_exit);
-MODULE_DESCRIPTION("ClydeFS prototype");
-MODULE_LICENSE("GPL");
 
