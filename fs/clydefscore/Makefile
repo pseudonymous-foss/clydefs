@@ -11,6 +11,7 @@ ifneq ($(KERNELRELEASE),)
 	ccflags-y += -I$(src)/$(EMBUNIT_DIR)/wrap
 	ccflags-y += -DNO_STDIO_PRINTF
 	
+	CFLAGS_blinktree.o := -DDEBUG
 	obj-$(CONFIG_CLYDEFS_CORE_FS) := clydefscore.o
 	
 	clydefscore-y += core.o blinktree.o stack.o treeinterface.o blinktreeinterface.o
