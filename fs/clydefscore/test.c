@@ -1,7 +1,5 @@
 #include <embUnit/embUnit.h>
 #include <linux/kernel.h>
-
-/*extern TestRef CounterTest_tests(TestCaller *test);*/
 extern TestRef stack_tests(TestCaller *test);
 extern TestRef blinktree_tests(TestCaller *test);
 

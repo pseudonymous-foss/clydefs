@@ -24,8 +24,8 @@ struct treeinterface {
      * @param len the length of the data in bytes 
      * @param data a pointer to the data itself 
      * @return 0 on success. Negative values indicate errors. 
-     *         -ENOMEM in particular if out of memory.
-     *         -ENOENT => no tree by 'tid'
+     *         TERR_ALLOC_FAILED in particular if out of memory.
+     *         TERR_NO_SUCH_TREE => no tree by 'tid'
      * @post provided function returns successfully. 'nid' will be 
      *       set to the assigned node identifier.
      */
@@ -34,7 +34,8 @@ struct treeinterface {
      * @param tid the tree identifier
      * @param nid the node identifier
      * @return 0 on success. Negative values on errors. Positive 
-     *         values as status codes. -ENOENT => no such node
+     *         values as status codes. TERR_NO_SUCH_NODE => no such
+     *         node
      */
     int (*node_remove)(u64 tid, u64 nid);
     /**
@@ -45,8 +46,8 @@ struct treeinterface {
      * @param len amount to read in bytes 
      * @param data a buffer guaranteed to be at least large enough 
      *         to hold the requested data
-     * @return 0 on success. Negative values on errors: -ENOENT if 
-     *         the node doesn't exist
+     * @return 0 on success. Negative values on errors: 
+     *         TERR_NO_SUCH_NODE if the node doesn't exist
      */
     int (*node_read)(u64 tid, u64 nid, u64 offset, u64 len, void *data);
     /** 
@@ -56,9 +57,10 @@ struct treeinterface {
      * @param offset the offset within the node from which to begin writing. In bytes. 
      * @param len length of data buffer which is to be written. 
      * @param data a buffer containing the data to write. 
-     * @return 0 on success. Negative values on errors. -ENOENT if 
-     *         the node doesn't exist, -ENOMEM if space allocation
-     *         for the data failed. 
+     * @return 0 on success. Negative values on errors. 
+     *         TERR_NO_SUCH_NODE if the node doesn't exist,
+     *         TERR_ALLOC_FAILED if space allocation for the data
+     *         failed.
      */
     int (*node_write)(u64 tid, u64 nid, u64 offset, u64 len, void *data);
 };
