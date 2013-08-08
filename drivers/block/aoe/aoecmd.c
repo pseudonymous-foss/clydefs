@@ -533,7 +533,6 @@ aoecmd_ata_rw(struct aoedev *d)
         printk("new tree cmd out\n");
         buf->sector += bcnt; /*byte-addressability*/
     } else { /*ATA cmd*/
-        printk("new ATA cmd out\n");
         buf->sector += bcnt >> 9; /*sector-addressability*/
     }
     buf->nframesout += 1;
@@ -1100,8 +1099,7 @@ void
 aoecmd_work(struct aoedev *d)
 {
 	rexmit_deferred(d);
-	while (aoecmd_ata_rw(d))
-		printk("more to send...\n");
+	while (aoecmd_ata_rw(d));
 }
 
 /* this function performs work that has been deferred until sleeping is OK
@@ -1392,14 +1390,15 @@ static void ktiocomplete_tree(struct frame *f, struct aoe_hdr *hin,
     case AOECMD_REMOVETREE:
     case AOECMD_REMOVENODE:
     case AOECMD_UPDATENODE:
-        td->err = dhin->tree.err; /*FIXME: UpdateNode only: last err reply becomes canon*/
+        td->err |= dhin->tree.err;
         break;
     case AOECMD_INSERTNODE:
         td->nid = dhin->tree.nid;
-        td->err = dhin->tree.err; /*FIXME: last err message becomes canon*/
+        td->err |= dhin->tree.err;
+        printk("Set: td->err(%u), dhin->tree.err(%u)\n", td->err, dhin->tree.err);
         break;
     case AOECMD_READNODE:
-        td->err = dhin->tree.err;
+        td->err |= dhin->tree.err;
         bvcpy(f->bv, f->bv_off, skb, dhout->tree.len);
         skb_copy_bits(skb, 0, buf, dhout->tree.len); /*FIXME REMOVE*/
         printk("READNODE RSP BUF: [%s]\n", buf);
