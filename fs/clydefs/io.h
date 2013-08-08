@@ -1,6 +1,8 @@
 #ifndef __CLYDEFS_IO_H
 #define __CLYDEFS_IO_H
 #include <linux/types.h>
+#include <linux/blkdev.h>
+#include <linux/tree.h>
 
 /*presently block size set corresponds to 512bytes*/
 #define BLOCK_SIZE_SHIFT 9
@@ -9,21 +11,6 @@
 enum BIO_TYPE{
     ATA_BIO,
     TREE_BIO,
-};
-
-
-
-/** 
- * extended bio data for the tree-based
- * interface.
- */ 
-struct tree_iface_data {
-    u8 cmd;         /*one of the vendor-specific AOECMD_* codes*/
-    u64 tid;
-    u64 nid;
-    u64 off;
-    u64 len;
-    u64 err;
 };
 
 /** 
@@ -68,16 +55,16 @@ int cfsio_init(void);
 
 void cfsio_exit(void);
 
-int cfsio_create_tree_sync(u64 *ret_tid);
+int cfsio_create_tree_sync(struct block_device *bd, u64 *ret_tid);
 
-int cfsio_remove_tree_sync(u64 tid);
+int cfsio_remove_tree_sync(struct block_device *bd, u64 tid);
 
-int cfsio_insert_node_sync(u64 *ret_nid, u64 tid);
+int cfsio_insert_node_sync(struct block_device *bd, u64 *ret_nid, u64 tid);
 
-int cfsio_remove_node(u64 tid, u64 nid);
+int cfsio_remove_node(struct block_device *bd, u64 tid, u64 nid);
 
-int cfsio_update_node(cfsio_on_endio_t on_complete, u64 tid, u64 nid, u64 offset, u64 len, void *data);
+int cfsio_update_node(struct block_device *bd, cfsio_on_endio_t on_complete, u64 tid, u64 nid, u64 offset, u64 len, void *data);
 
-int cfsio_read_node(cfsio_on_endio_t on_complete, u64 tid, u64 nid, u64 offset, u64 len, void *data);
+int cfsio_read_node(struct block_device *bd, cfsio_on_endio_t on_complete, u64 tid, u64 nid, u64 offset, u64 len, void *data);
 
 #endif //__CLYDEFS_IO_H

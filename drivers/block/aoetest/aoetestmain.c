@@ -6,6 +6,7 @@
 #include <linux/string.h>
 #include <linux/fs.h>
 #include <linux/blkdev.h>
+#include <linux/tree.h>
 
 #define VERSION "10"
 #define nelem(A) (sizeof (A) / sizeof (A)[0])
@@ -21,19 +22,6 @@ static struct kmem_cache *tree_iface_pool = NULL;
 static struct bio_set *bio_pool = NULL;
 
 static u8 empty_read_buffer = 255;
-
-/** 
- * extended bio data for the tree-based
- * interface.
- */ 
-struct tree_iface_data {
-    u8 cmd;         /*one of the vendor-specific AOECMD_* codes*/
-    u64 tid;
-    u64 nid;
-    u64 off;
-    u64 len;
-    u64 err;
-};
 
 static void aoetest_release(struct kobject *kobj);
 static struct kobj_type aoetest_ktype_device;
@@ -68,16 +56,6 @@ struct aoetest_sysfs_entry {
 enum BIO_TYPE{
     ATA_BIO,
     TREE_BIO,
-};
-
-enum AOE_CMD {
-    /*Support our vendor-specific codes*/
-    AOECMD_CREATETREE = 0xF0,   /*create a new tree*/
-    AOECMD_REMOVETREE,          /*remove a tree and all its child nodes*/
-    AOECMD_READNODE,            /*read data from an node*/
-    AOECMD_INSERTNODE,          /*create a new node with some initial data*/
-    AOECMD_UPDATENODE,          /*update the data of an existing node*/
-    AOECMD_REMOVENODE,          /*remove the node and associated data*/
 };
 
 struct submit_syncbio_data {
@@ -317,7 +295,7 @@ static ssize_t __aoedev_add_dev(char *dev_path , char *tag)
 	if (get_capacity(bd->bd_disk) == 0) {
 		printk(KERN_ERR "add failed: zero sized block device.\n");
 		ret = -ENOENT;
-		goto err;
+		goto err_dev;
 	}
     printk("checked capacity\n");
 
@@ -330,7 +308,7 @@ static ssize_t __aoedev_add_dev(char *dev_path , char *tag)
             spin_unlock(&lock);
             printk(KERN_ERR "device already added to AoE Test module (%s)\n", dev_path);
             ret = -EEXIST;
-            goto err;
+            goto err_dev;
         }
     }
     printk("malloc GFP_ATOMIC\n");
@@ -338,7 +316,7 @@ static ssize_t __aoedev_add_dev(char *dev_path , char *tag)
 	if (!d) {
 		printk(KERN_ERR "add failed: kmalloc error for '%s'\n", dev_path);
 		ret = -ENOMEM;
-		goto err;
+		goto err_alloc_dev;
 	}
     printk("memset\n");
 	memset(d, 0, sizeof(struct aoedev));
@@ -346,7 +324,11 @@ static ssize_t __aoedev_add_dev(char *dev_path , char *tag)
 	strncpy(d->dev_path, dev_path, nelem(d->dev_path)-1);
     strncpy(d->tag, tag, nelem(d->tag)-1);
 	printk("kobject_init_and_add\n");
-	kobject_init_and_add(&d->kobj, &aoetest_ktype_device, &aoetest_kobj, "%s", tag);
+
+	if (kobject_init_and_add(&d->kobj, &aoetest_ktype_device, &aoetest_kobj, "%s", tag)){
+        ret = -1; /*honestly no idea what went wrong*/
+        goto err_add_kobject;
+    }
     printk("init and unlock\n");
     /*prepend dev to devlist*/
 	d->next = devlist;
@@ -355,8 +337,11 @@ static ssize_t __aoedev_add_dev(char *dev_path , char *tag)
 
 	printk("Exposed TREE/ATA interface of device '%s', tagged: '%s'\n", d->dev_path, d->tag);
 	return 0;
-err:
-	blkdev_put(bd, FMODE_READ|FMODE_WRITE);
+err_add_kobject:
+    kfree(d);
+err_alloc_dev:
+err_dev:
+    blkdev_put(bd, FMODE_READ|FMODE_WRITE);
 	return ret;
 }
 
@@ -491,7 +476,6 @@ static ssize_t store_createtree(struct aoedev *dev, const char *page, size_t len
     if (bio_add_page(b,p,bcnt,vec_off) < bcnt) {
         goto err_page_add;
     }
-
     submit_bio(READ, b);
     log_cmd("create_tree");
 
@@ -984,7 +968,9 @@ static __init int
 aoe_init(void)
 {
     spin_lock_init(&lock);
-    kobject_init_and_add(&aoetest_kobj, &aoetest_ktype_module, NULL, "aoetest");
+
+    if (kobject_init_and_add(&aoetest_kobj, &aoetest_ktype_module, NULL, "aoetest"))
+        return -1;
     
     tree_iface_pool = kmem_cache_create("tree_iface_data", sizeof (struct tree_iface_data), 0, 0, NULL);
     if (tree_iface_pool == NULL)

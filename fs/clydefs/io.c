@@ -2,6 +2,8 @@
 #include <linux/bio.h>
 #include <linux/slab.h>
 #include <linux/pagemap.h>
+#include <linux/blkdev.h>
+#include <linux/tree.h>
 #include "io.h"
 
 /* 
@@ -14,9 +16,14 @@
         block size being less than the page size itself, go through it and work out if
         block_size==page_size would work - change otherwise
  
-    * need to follow xfs / ext4 example and have clydefs-specific end_io callbacks. Until then
-        direct finished bios to an internal bio_end_io_t callback and call OUR callback when
-        all bio's making up a command/operation has been finished.
+    * FIXME -- still need to consider how to include the block-dev/context into the request struct.
+        Give people a chance to reissue failed fragments
+ 
+    * FIXME -- add TERR_IO_ERR to account for partially completed requests or single-bio requests
+        where the bio fails.
+ 
+    * FIXME -- fix sync commands so that the correct error is returned, not just the
+        bio end_io retval
 */
 
 struct bio_page_data {
@@ -46,16 +53,6 @@ struct cfsio_rq {
     atomic_t initialised;
     /** function to call once the request is fully completed */
     cfsio_on_endio_t endio_cb;
-};
-
-enum AOE_CMD {
-    /*Support our vendor-specific codes*/
-    AOECMD_CREATETREE = 0xF0,   /*create a new tree*/
-    AOECMD_REMOVETREE,          /*remove a tree and all its child nodes*/
-    AOECMD_READNODE,            /*read data from an node*/
-    AOECMD_INSERTNODE,          /*create a new node with some initial data*/
-    AOECMD_UPDATENODE,          /*update the data of an existing node*/
-    AOECMD_REMOVENODE,          /*remove the node and associated data*/
 };
 
 static struct kmem_cache *cfsio_rqfrag_pool = NULL;
@@ -149,6 +146,7 @@ static void fragment_end_io(struct bio *b, int error) {
  *       additional data.
  * @note you're still required to specify a function to call 
  *       once the IO completes.
+ * @post returned bio reference with increased count 
  */ 
 static struct bio *__alloc_bio(enum BIO_TYPE bt)
 {
@@ -163,17 +161,19 @@ static struct bio *__alloc_bio(enum BIO_TYPE bt)
     if (bt == TREE_BIO) {
         struct cfsio_rq_frag *frag = NULL;
         frag = kmem_cache_alloc(cfsio_rqfrag_pool, GFP_ATOMIC);
-        if (!frag)
+        if (!frag) {
+            pr_debug("failed to allocate request fragment for bio\n");
             goto err_alloc_fragment;
+        }
         memset(frag, 0, sizeof *frag);
 
         b->bi_treecmd = &frag->td;
-        b->bi_private = NULL;
         b->bi_sector = 0; /*using td->off to mark offsets for read/write*/
     } else {
         b->bi_treecmd = NULL;
-        b->bi_private = NULL;
     }
+    b->bi_private = NULL;
+
     return b;
 
 err_alloc_fragment:
@@ -185,13 +185,11 @@ err_alloc_bio:
 /**
  * Helper method for deallocating bio's.
  * @param b the bio to release
- * @note only call this if you're sure releasing one more
- *       reference will actually dealloc the bio.
+ * @note only call this if no further work will be done on the 
+ *       bio, regardless of other outstanding references.
  */ 
 static void __dealloc_bio(struct bio *b)
 {
-    BUG_ON( atomic_read(&b->bi_cnt) != 1 );
-
     if (b->bi_treecmd) { /*assume tree bio*/
         struct cfsio_rq_frag *frag = tbio_get_frag(b);
         kmem_cache_free(cfsio_rqfrag_pool, frag);
@@ -231,9 +229,10 @@ static void __free_tbio_fragments(struct cfsio_rq *rq)
  *          synchronous
  * @param error error code of bio, 0 if no error occurred.
  */
-static void __submit_bio_syncio(struct bio *b, int error)
+static void __submit_bio_sync_end_io(struct bio *b, int error)
 {
 	struct submit_syncbio_data *ret = b->bi_private;
+    printk("%s called...\n", __FUNCTION__);
 	ret->error = error;
 	complete(&ret->event);
 }
@@ -248,14 +247,16 @@ static void __submit_bio_syncio(struct bio *b, int error)
 static int __submit_bio_sync(struct bio *bio, int rw)
 {
     struct submit_syncbio_data ret;
-
-	rw |= REQ_SYNC;
+    printk("%s called...\n", __FUNCTION__);
+    rw |= REQ_SYNC;
 	/*initialise queue*/
     ret.event.done = 0;
     init_waitqueue_head(&ret.event.wait);
 
+    printk("configuring bio...\n");
 	bio->bi_private = &ret;
-	bio->bi_end_io = __submit_bio_syncio;
+	bio->bi_end_io = __submit_bio_sync_end_io;
+    printk("b4 actual submit\n");
 	submit_bio(rw, bio);
 	wait_for_completion(&ret.event);
 
@@ -267,29 +268,40 @@ static int __submit_bio_sync(struct bio *bio, int rw)
  * @description creates a new tree on the backing device and
  *              returns the resulting id.
  */
-int cfsio_create_tree_sync(u64 *ret_tid) {
-    struct bio *b = __alloc_bio(TREE_BIO);
-    struct tree_iface_data *td;
+int cfsio_create_tree_sync(struct block_device *bd, u64 *ret_tid) {
+    struct bio *b = NULL;
+    struct tree_iface_data *td = NULL;
     int retval;
+
+    printk("%s called...\n", __FUNCTION__);
+    b = __alloc_bio(TREE_BIO);
 
     if (!b) {
         pr_warn("failed to allocate tree bio\n");
         retval = -ENOMEM;
         goto err_alloc_bio;
     }
+    printk("bio allocated\n");
     td = (struct tree_iface_data*)b->bi_treecmd;
 
     td->cmd = AOECMD_CREATETREE;
-
+    printk("b4 bio_add_page (nilbuf)\n");
+    
+    b->bi_bdev = bd;
     if (bio_add_page(b,nilbuf.page_addr,nilbuf.bcnt,nilbuf.vec_off) < nilbuf.bcnt) {
         retval = -ENOMEM;
         goto out;
     }
+    printk("empty page added to bio\n");
 
+    printk("b4 sumitting bio\n");
     if ((retval=__submit_bio_sync(b, READ)) != 0) {
-        /*FIXME bio_end_io fnc retval here - what can it be ?*/
+        retval = TERR_IO_ERR;
         goto out;
     }
+    /*io successful, return TREE err val*/
+    retval = td->err;
+    bio_put(b);
 
     /*success, fall through to dealloc bio*/
     *ret_tid = td->tid;
@@ -306,11 +318,12 @@ err_alloc_bio:
  *              both the tree itself and any node(s) and their
  *              data in the process.
  */ 
-int cfsio_remove_tree_sync(u64 tid) {
-    struct bio *b = __alloc_bio(TREE_BIO);
-    struct tree_iface_data *td;
+int cfsio_remove_tree_sync(struct block_device *bd, u64 tid) {
+    struct bio *b = NULL;
+    struct tree_iface_data *td = NULL;
     int retval;
 
+    b = __alloc_bio(TREE_BIO);
     if (!b) {
         pr_warn("failed to allocate tree bio\n");
         retval = -ENOMEM;
@@ -321,15 +334,19 @@ int cfsio_remove_tree_sync(u64 tid) {
     td->cmd = AOECMD_REMOVETREE;
     td->tid = tid;
 
+    b->bi_bdev = bd;
     if (bio_add_page(b,nilbuf.page_addr,nilbuf.bcnt,nilbuf.vec_off) < nilbuf.bcnt) {
         retval = -ENOMEM;
         goto out;
     }
 
     if ((retval=__submit_bio_sync(b, READ)) != 0) {
-        /*FIXME bio_end_io fnc retval here - what can it be ?*/
+        retval = TERR_IO_ERR;
         goto out;
     }
+    /*io successful, return TREE err val*/
+    retval = td->err;
+    bio_put(b);
 
     /*success, fall through to dealloc bio*/
 
@@ -349,11 +366,12 @@ err_alloc_bio:
  * @post on success, *ret_nid will hold the assigned node 
  *       identifier.
  */
-int cfsio_insert_node_sync(u64 *ret_nid, u64 tid) {
-    struct bio *b = __alloc_bio(TREE_BIO);
-    struct tree_iface_data *td;
+int cfsio_insert_node_sync(struct block_device *bd, u64 *ret_nid, u64 tid) {
+    struct bio *b = NULL;
+    struct tree_iface_data *td = NULL;
     int retval;
 
+    b = __alloc_bio(TREE_BIO);
     if (!b) {
         pr_warn("failed to allocate tree bio\n");
         retval = -ENOMEM;
@@ -364,15 +382,19 @@ int cfsio_insert_node_sync(u64 *ret_nid, u64 tid) {
     td->cmd = AOECMD_INSERTNODE;
     td->tid = tid;
 
+    b->bi_bdev = bd;
     if (bio_add_page(b,nilbuf.page_addr,nilbuf.bcnt,nilbuf.vec_off) < nilbuf.bcnt) {
         retval = -ENOMEM;
         goto out;
     }
-
+    
     if ((retval=__submit_bio_sync(b, READ)) != 0) {
-        /*FIXME bio_end_io fnc retval here - what can it be ?*/
+        retval = TERR_IO_ERR;
         goto out;
     }
+    /*io successful, return TREE err val*/
+    retval = td->err;
+    bio_put(b);
 
     /*success, fall through to dealloc bio*/
     *ret_nid = td->nid;
@@ -391,11 +413,12 @@ err_alloc_bio:
  * @description removes the specified node from the specified
  *              tree.
  */
-int cfsio_remove_node_sync(u64 tid, u64 nid) {
-    struct bio *b = __alloc_bio(TREE_BIO);
-    struct tree_iface_data *td;
+int cfsio_remove_node_sync(struct block_device *bd, u64 tid, u64 nid) {
+    struct bio *b = NULL;
+    struct tree_iface_data *td = NULL;
     int retval;
 
+    b = __alloc_bio(TREE_BIO);
     if (!b) {
         pr_warn("failed to allocate tree bio\n");
         retval = -ENOMEM;
@@ -407,15 +430,19 @@ int cfsio_remove_node_sync(u64 tid, u64 nid) {
     td->tid = tid;
     td->nid = nid;
 
+    b->bi_bdev = bd;
     if (bio_add_page(b,nilbuf.page_addr,nilbuf.bcnt,nilbuf.vec_off) < nilbuf.bcnt) {
         retval = -ENOMEM;
         goto out;
     }
 
     if ((retval=__submit_bio_sync(b, READ)) != 0) {
-        /*FIXME bio_end_io fnc retval here - what can it be ?*/
+        retval = TERR_IO_ERR;
         goto out;
     }
+    /*io successful, return TREE err val*/
+    retval = td->err;
+    bio_put(b);
 
     /*success, fall through to dealloc bio*/
 out:
@@ -424,7 +451,7 @@ err_alloc_bio:
     return retval;
 }
 
-static int cfsio_data_request(enum AOE_CMD cmd, int rw, cfsio_on_endio_t on_complete, 
+static int cfsio_data_request(struct block_device *bd, enum AOE_CMD cmd, int rw, cfsio_on_endio_t on_complete, 
                               u64 tid, u64 nid, u64 offset, u64 len, void *data)
 {
     /* 
@@ -468,6 +495,10 @@ next_chunk:
         retval = -ENOMEM;
         goto err_alloc_bio; /*FIXME that will not work here, we don't know how many bio's we'll issue*/
     }
+    b->bi_bdev = bd;
+    b->bi_end_io = fragment_end_io;
+    b->bi_private = req;
+
     /*offset/len is set per AoE fragment*/
     b_td = (struct tree_iface_data *)b->bi_treecmd;
     b_td->cmd = cmd;
@@ -513,11 +544,11 @@ next_chunk:
         chunk_pages--;
     }
 
-    b->bi_end_io = fragment_end_io;
-    b->bi_private = req;
+    
     atomic_inc(&req->cb_data.bio_num);
 
     submit_bio(rw, b);
+    bio_put(b);
 
     if(unlikely(chunk_pages)) {
         pages_left += chunk_pages; /*didn't finish our chunk, return leftovers*/
@@ -547,8 +578,8 @@ err_alloc_req:
  *               identified by tid by writing the supplied data
  *               at the supplied offset in the node.
  */
-int cfsio_update_node(cfsio_on_endio_t on_complete, u64 tid, u64 nid, u64 offset, u64 len, void *data) {
-    return cfsio_data_request(AOECMD_UPDATENODE, WRITE, on_complete, tid, nid, offset, len, data);
+int cfsio_update_node(struct block_device *bd, cfsio_on_endio_t on_complete, u64 tid, u64 nid, u64 offset, u64 len, void *data) {
+    return cfsio_data_request(bd, AOECMD_UPDATENODE, WRITE, on_complete, tid, nid, offset, len, data);
 }
 
 /**
@@ -565,8 +596,8 @@ int cfsio_update_node(cfsio_on_endio_t on_complete, u64 tid, u64 nid, u64 offset
  * @todo what about reading past the end, what attempting reads 
  *       to non-existing sequences entirely.
  */
-int cfsio_read_node(cfsio_on_endio_t on_complete, u64 tid, u64 nid, u64 offset, u64 len, void *data) {
-    return cfsio_data_request(AOECMD_READNODE, READ, on_complete, tid, nid, offset, len, data);
+int cfsio_read_node(struct block_device *bd, cfsio_on_endio_t on_complete, u64 tid, u64 nid, u64 offset, u64 len, void *data) {
+    return cfsio_data_request(bd, AOECMD_READNODE, READ, on_complete, tid, nid, offset, len, data);
 }
 
 /** 
@@ -591,7 +622,7 @@ int cfsio_init(void) {
     cfsio_rq_pool = kmem_cache_create("cfsio_rq", sizeof (struct cfsio_rq), 0, 0, NULL);
     if (cfsio_rq_pool == NULL) {
         pr_err("Failed to allocate request pool (cfsio_rq_pool)\n");
-        goto err_alloc_reqpool;
+        goto err_alloc_rqpool;
     }
     
     /*bogus values for bio's which send no additional data than 
@@ -600,8 +631,9 @@ int cfsio_init(void) {
     nilbuf.bcnt = sizeof(_nilbuf_data);
     nilbuf.vec_off = offset_in_page(&_nilbuf_data);
 
+    pr_debug("cfsio_init successful...\n");
     return 0;
-err_alloc_reqpool:
+err_alloc_rqpool:
     kmem_cache_destroy(cfsio_rqfrag_pool);
 err_alloc_rqfragpool:
     bioset_free(bio_pool);
