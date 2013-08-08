@@ -63,10 +63,10 @@ int blinktree_remove(u64 tid);
 
 int blinktree_node_insert(u64 tid, u64 nid, void *data);
 int blinktree_node_remove(u64 tid, u64 nid);
-struct btd *blinktree_lookup(u64 tid, u64 nid);
+int blinktree_lookup(struct btd **ret_btd, u64 tid, u64 nid);
 
 
-/*static noinline */ int data_block_alloc(struct btd **block_ref, u16 num_bytes);
+/*static noinline */ int data_block_alloc(struct btd **ret_block_ref, u16 num_bytes);
 void data_block_free(struct btd *block);
 
 #ifdef DBG_FUNCS

@@ -2,6 +2,7 @@
 #include <linux/types.h>
 #include <linux/vmalloc.h>
 #include <linux/slab.h>
+#include <linux/tree.h>
 
 #include "blinktree.h"
 #include "stack.h"
@@ -63,7 +64,7 @@
 #define NODE_LOCK(n) \
     do { \
         if(spin_is_locked(&(n)->lock)) \
-            pr_warn("encountered a lock, waiting...\n"); \
+            pr_debug("%s<%d>: encountered a lock, waiting...\n", __FUNCTION__, __LINE__); \
         spin_lock(&(n)->lock); \
     } while(0);
 
@@ -138,7 +139,7 @@ static __always_inline void set_tree_root(u64 tid, struct btn *new_root)
         }
     }
     /*err out*/
-    pr_warn("\n\nset_tree_root: could not find any tree with id(%llu)!\n", tid);
+    pr_debug("\n\nset_tree_root: could not find any tree with id(%llu)!\n", tid);
     BUG();
 }
 
@@ -174,7 +175,7 @@ static noinline int make_node(struct tree *tree, struct btn **node_ref, u64 nid,
     
     n = (struct btn*)kmem_cache_alloc(tree->node_cache, GFP_ATOMIC);
     if (!n) {
-        pr_warn("make_node: failed to allocate node\n");
+        pr_debug("make_node: failed to allocate node\n");
         goto err_alloc;
     }
     /*
@@ -214,36 +215,39 @@ static noinline void free_node(struct tree *tree, struct btn *node)
 }
 #endif
 
-/* 
- * Allocate a data block of a variable size of bytes 
- * --- 
- *   block_ref: pointer to the pointer which will hold a reference to the allocation, if successful
- *   num_bytes: the size of the data block to allocate, in bytes.
- * --- 
- * return: 
- *   -ENOMEM if allocation failed
- *   0 if allocation went well
- */
-/*static noinline */ int data_block_alloc(struct btd **block_ref, u16 num_bytes){
-    CLYDE_ASSERT(block_ref != NULL);
-    CLYDE_ASSERT(*block_ref == NULL); /*ensure we're not losing a ptr*/
+
+/** 
+ *  Allocate a data block of a variable size of bytes
+ *  @param ret_block_ref pointer to the pointer which will hold
+ *                   a reference to the allocation, if
+ *                   successful.
+ *  @param num_bytes: the size of the data block to allocate, in
+ *                  bytes.
+ *  @return 0 on success, error otherwise. e.g.
+ *          TERR_ALLOC_FAILED => allocation failed.
+ *  @post On success, *ret_block_ref points to the allocated
+ *        data block. On failure, *ret_block_ref points to NULL.
+ */ 
+int data_block_alloc(struct btd **ret_block_ref, u16 num_bytes){
+    CLYDE_ASSERT(ret_block_ref != NULL);
+    CLYDE_ASSERT(*ret_block_ref == NULL); /*ensure we're not losing a ptr*/
 
     /*alloc leaf*/
-    *block_ref = (struct btd*)kmalloc(sizeof(struct btd), GFP_ATOMIC);
-    if(!*block_ref)
+    *ret_block_ref = (struct btd*)kmalloc(sizeof(struct btd), GFP_ATOMIC);
+    if(!*ret_block_ref)
         goto err_alloc;
 
-    (*block_ref)->data = (u8*) kmalloc(sizeof(u8)*num_bytes, GFP_ATOMIC);
-    if(!(*block_ref)->data)
+    (*ret_block_ref)->data = (u8*) kmalloc(sizeof(u8)*num_bytes, GFP_ATOMIC);
+    if(!(*ret_block_ref)->data)
         goto err_data_alloc;
-    (*block_ref)->num_bytes = num_bytes;
+    (*ret_block_ref)->num_bytes = num_bytes;
 
     goto out;
 
 err_data_alloc:
-    kfree(*block_ref);
+    kfree(*ret_block_ref);
 err_alloc:
-    return -ENOMEM;
+    return TERR_ALLOC_FAILED;
 out:
     return 0;
 }
@@ -267,7 +271,7 @@ u64 blinktree_create(u8 k)
     size_t node_size;
     t = (struct tree*)kmalloc(sizeof(struct tree), GFP_ATOMIC);
     if (!t) {
-        pr_warn("blinktree_create failed to allocate memory\n");
+        pr_debug("blinktree_create failed to allocate memory\n");
         goto err_tree_alloc;
     }
     t->k = k;
@@ -279,12 +283,12 @@ u64 blinktree_create(u8 k)
 
     t->node_cache = kmem_cache_create("btn", node_size, 0, 0, NULL);
     if (!t->node_cache) {
-        pr_warn("blinktree_create: failed to allocate memcache for k=%u tree\n", k);
+        pr_debug("blinktree_create: failed to allocate memcache for k=%u tree\n", k);
         goto err_cache_alloc;
     }
 
     if (make_node(t, &n, acquire_nid(), LEAF_NODE)){
-        pr_warn("Failed allocating a root node for the creation of a new tree\n");
+        pr_debug("Failed allocating a root node for the creation of a new tree\n");
         goto err_node_alloc;
     }
     t->root = n;
@@ -316,8 +320,8 @@ err_tree_alloc:
 /** 
  * Remove tree identified by 'tid'
  * @param tid the tree identifier.
- * @return 0 on success, negative on errors. e.g. -ENOENT => no
- *         such tree.
+ * @return 0 on success, 
+ *  TERR_NO_SUCH_TREE => supplied ID didn't match a tree 
  */ 
 int blinktree_remove(u64 tid)
 {
@@ -326,7 +330,7 @@ int blinktree_remove(u64 tid)
         how many threads work on the tree at any moment
     */
     struct tree *c, *p = NULL;
-    pr_warn("blinktree_remove not yet implemented _properly_\n");
+    pr_debug("blinktree_remove not yet implemented _properly_\n");
 
     c = tree_list_head;
     while(c != NULL) {
@@ -342,7 +346,7 @@ int blinktree_remove(u64 tid)
         p = c;
         c = c->nxt;
     }
-    return -ENOENT;
+    return TERR_NO_SUCH_TREE;
 }
 
 /* 
@@ -651,22 +655,21 @@ static __always_inline struct btn *node_split(struct tree *tree, struct btn *nod
     return node_right;
 }
 
-/* 
- * Searches from root node toward a leaf. 
- * --- 
- * root: root node
- * key: key to search for 
- * path: a stack with which to record the path down the tree 
- *  (minus the nodes travelled to via link pointers) 
- * --- 
- * returns: 
- *  - a node to the leaf, NULL if no results 
- * preconditions: 
- *  - an empty, initialised stack
- * postconditions: 
- *  - returns the leaf node itself as the return value
- *  - path: contains each node traversed (including root) to get to the leaf, pushed in order
- */
+/** 
+ *  Searches from the root node toward a leaf containing an
+ *  entry for 'key'.
+ *  @param root the root of the tree
+ *  @param key the key of the entry to search for
+ *  @param path a stack on which to record the path travelled
+ *              down the tree. (minus nodes travelled via link
+ *              pointers)
+ *  @return a leaf-node identified by 'key' or NULL if no such
+ *          path was found.
+ *  @pre 'path' is an empty, initialised stack.
+ *  @post 'path' contains each node traversed (root included,
+ *        siblings excluded) to get to the leaf, pushed in
+ *        order.
+ */ 
 static noinline struct btn *find_leaf(struct btn *root, u64 key, struct stack *path)
 {
     /*note as per b-link algorithm, only the moves down to 
@@ -715,7 +718,7 @@ static noinline struct btn *find_leaf(struct btn *root, u64 key, struct stack *p
             /*none of the child nodes actually matched, use link ptr*/
             /*node must've been split, advance to sibling, if possible, otherwise err out*/
             if ( c->sibling == NULL ) {
-                pr_warn("blinktree,findleaf: exiting with null for sibling\n");
+                printk("blinktree,findleaf: exiting with null for sibling\n");
                 goto no_node;
             }
             c = c->sibling;
@@ -784,7 +787,7 @@ static noinline struct btn *find_leaf_no_path(struct tree *tree, u64 key)
             /*none of the child nodes actually matched, use link ptr*/
             /*node must've been split, advance to sibling, if possible, otherwise err out*/
             if ( c->sibling == NULL ) {
-                pr_warn("blinktree,findleaf_no_path: exiting with null for sibling\n");
+                printk("blinktree,findleaf_no_path: exiting with null for sibling\n");
                 goto no_node;
             }
             c = c->sibling;
@@ -827,24 +830,39 @@ static __always_inline struct btd *blinktree_scanleaf(struct btn *node, u64 key)
 
 
 /** 
- * Locate the data node identified by 'nid'
+ * Locate the data node identified by 'nid' 
+ * @param ret_btd a pointer to where a pointer to the leaf node 
+ *                should be stored.
  * @param tid the tree identifier 
  * @param nid the node identifier 
- * @return NULL reference if no node was found. 
- *         Otherwise a reference to the node 
+ * @return 0 on success, TERR_NO_SUCH_TREE or TERR_NO_SUCH_NODE 
+ *         on failure to locate the node.
+ * @post '*ret_btd' points to the blinktree data node if a leaf 
+ *       was found, or NULL if the lookup failed.
  */
-struct btd *blinktree_lookup(u64 tid, u64 nid)
+int blinktree_lookup(struct btd **ret_btd, u64 tid, u64 nid)
 {
     struct btn *c = NULL;
+    int retval = 0;
     struct tree *tree = get_tree(tid);
-    
-    CLYDE_ASSERT(tree != NULL);
+    *ret_btd = NULL;
+
+    if (unlikely(tree == NULL)) {
+        retval |= TERR_NO_SUCH_TREE;
+        goto out;
+    }
+    CLYDE_ASSERT(ret_btd != NULL);
     CLYDE_ASSERT(tree->root != NULL);
 
     c = find_leaf_no_path(tree, nid);
-    if ( unlikely(c == NULL) ) return NULL;
+    if ( unlikely(c == NULL) ) {
+        retval |= TERR_NO_SUCH_NODE;
+        goto out;
+    }
 
-    return blinktree_scanleaf(c, nid);
+    *ret_btd = blinktree_scanleaf(c, nid);
+out:
+    return retval;
 }
 
 
@@ -959,7 +977,7 @@ static __always_inline struct btn* patch_parents_children_entries(struct btn *pa
            NODE_LOCK(cn);
        }else{
            u8 i;
-           pr_warn(" (nl_p) proceded through all internal nodes until hitting the last node - should NEVER happen (rightmost node should have inf as last key)\n");
+           pr_err(" (nl_p) proceded through all internal nodes until hitting the last node - should NEVER happen (rightmost node should have inf as last key)\n");
            for (i=0;i<pn->numkeys; i++)
                printk("k(%llu), ", pn->child_keys[i]);
            printk("\n");
@@ -981,7 +999,7 @@ static __always_inline struct btn* patch_parents_children_entries(struct btn *pa
 
    printk("\t\tbefore checking if nl_p and nl_r are set\n");
    if ( !node_parent ) {
-       pr_warn("blinktree,patch_parents_children_entries: did not find 'both' parents\n");
+       printk("blinktree,patch_parents_children_entries: did not find 'both' parents\n");
        BUG();
    }
    
@@ -1010,8 +1028,8 @@ static __always_inline struct btn* patch_parents_children_entries(struct btn *pa
  * @param nid the node id of the new node 
  * @param data the data to insert. 
  * @return 0 on success, negative on error. E.g. 
- *         -ENOMEM => allocation errors
- *         -ENOENT => no tree by 'tid'
+ *         TERR_ALLOC_FAILED => allocation errors
+ *         TERR_NO_SUCH_TREE => no tree by 'tid'
  */
 int blinktree_node_insert(u64 tid, u64 nid, void *data)
 {
@@ -1037,7 +1055,7 @@ int blinktree_node_insert(u64 tid, u64 nid, void *data)
     */
     struct btn *node;
     struct stack tree_path;
-    int retval;
+    int retval = 0;
     struct tree *tree;
 
     CLYDE_ASSERT(nid != TREE_MAX_NID); /*reserved value, read definition*/
@@ -1046,15 +1064,15 @@ int blinktree_node_insert(u64 tid, u64 nid, void *data)
     tree = get_tree(tid);
     if (unlikely(tree == NULL)) {
         /*No tree found by id 'tid'.*/
-        retval = -ENOENT;
-        goto out;
+        retval |= TERR_NO_SUCH_TREE;
+        goto err_no_such_tree;
     }
     CLYDE_ASSERT(tree->root != NULL);
     CLYDE_ASSERT(data != NULL);
 
     printk("before clydefscore_stack_init\n");
     if (clydefscore_stack_init(&tree_path, __BLINKTREE_EXPECTED_HEIGHT)) {
-        retval = 1; /* stack allocation failed */
+        retval |= TERR_ALLOC_FAILED; /* stack allocation failed */
         goto err_stack_alloc;
     }
 
@@ -1063,7 +1081,7 @@ int blinktree_node_insert(u64 tid, u64 nid, void *data)
     if (node == NULL) {
         /*find_leaf got stuck somewhere on an internal node*/
         pr_warn("blinktree_insert: find_leaf got stuck on an internal node and returned NULL\n");
-        retval = 1; 
+        retval |= TERR; 
         goto out;
     }
 
@@ -1108,7 +1126,7 @@ split_or_done:
         node_right = node_split(tree, node, is_root); 
         if (unlikely(node_right == NULL)) {
             pr_warn("blinktree_insert: unsafe insert requiring split failed, could not allocate new sibling node\n");
-            retval = -ENOMEM;
+            retval |= TERR_ALLOC_FAILED;
             goto out;
         }
         
@@ -1148,8 +1166,8 @@ split_or_done:
             printk("\t\tbefore make_node\n");
             if (make_node(tree, &root, acquire_nid(), INTERNAL_NODE)) {
                 /*failed to create new node*/
-                pr_warn("blinktree_insert: Failed to create new root node, presumably allocation failed.\n");
-                retval = -ENOMEM;
+                printk("blinktree_insert: Failed to create new root node, presumably allocation failed.\n");
+                retval |= TERR_ALLOC_FAILED;
                 goto out;
             }
             printk("\t\tbefore locking root->lock\n");
@@ -1174,6 +1192,7 @@ out:
     /*precondition: all locks have been released*/
     clydefscore_stack_free(&tree_path);
 err_stack_alloc:
+err_no_such_tree:
     return retval;
 }
 
@@ -1185,8 +1204,11 @@ err_stack_alloc:
  *        in which the node resides.
  * @param nid the node identifier, uniquely identifying 
  *        the node within the tree. 
- * @return 0 on success, negative on errors, e.g. 
- *         -ENOENT => no such node
+ * @return 0 on success, errors otherwise, e.g. 
+ *         TERR_NO_SUCH_NODE => no such node
+ *         TERR_NO_SUCH_TREE => supplied tid didn't match a tree
+ *         TERR_ALLOC_FAILED => allocation of stack to remember
+ *         tree path failed.
  */
 int blinktree_node_remove(u64 tid, u64 nid)
 {
@@ -1221,12 +1243,15 @@ int blinktree_node_remove(u64 tid, u64 nid)
     CLYDE_ASSERT(nid != TREE_MAX_NID); /*reserved value, read definition*/
 
     tree = get_tree(tid);
-    CLYDE_ASSERT(tree != NULL);
+    if (unlikely(tree == NULL)) {
+        retval |= TERR_NO_SUCH_TREE;
+        goto out;
+    }
     CLYDE_ASSERT(tree->root != NULL);
 
     printk("before clydefscore_stack_init\n");
     if (clydefscore_stack_init(&tree_path, __BLINKTREE_EXPECTED_HEIGHT)) {
-        retval = 1; /* stack allocation failed */
+        retval |= TERR_ALLOC_FAILED; /* stack allocation failed */
         goto err_stack_alloc;
     }
 
@@ -1234,8 +1259,8 @@ int blinktree_node_remove(u64 tid, u64 nid)
     node = find_leaf(tree->root, nid, &tree_path);
     if (node == NULL) {
         /*find_leaf got stuck somewhere on an internal node*/
-        pr_warn("blinktree_node_remove: find_leaf got stuck on an internal node and returned NULL\n");
-        retval = -ENOENT; 
+        printk("blinktree_node_remove: find_leaf got stuck on an internal node and returned NULL\n");
+        retval |= TERR_NO_SUCH_NODE; 
         goto out;
     }
 
