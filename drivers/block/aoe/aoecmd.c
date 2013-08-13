@@ -363,17 +363,16 @@ __tree_rw_frameinit(struct frame *f, struct aoe_datahdr *dh, struct tree_iface_d
     dh->tree.tid = ti->tid;
     dh->tree.nid = ti->nid;
 
-    
+    /*set offset & len for this request fragment*/
     dh->tree.off = ti->off + f->lba; /*cmd/node offset + fragment offset*/
+    dh->tree.len = f->bcnt;
+
     if (f->buf && bio_data_dir(f->buf->bio) == WRITE) {
-        printk("WRITE MODE ENGAGED\n");
+        printk("%s: WRITE MODE ENGAGED (writing: %lu bytes in packet)\n", __FUNCTION__, f->bcnt); /*FIXME REMOVE*/
         skb_fillup(f->skb, f->bv, f->bv_off, f->bcnt);
         f->skb->len += f->bcnt;
         f->skb->data_len = f->bcnt;
         f->skb->truesize += f->bcnt;
-
-        dh->tree.len = f->bcnt; /*FIXME: figure out if if this is inferable.*/
-        
 
         f->t->wpkts++; /*another write packet out the door*/
     } else {
@@ -1014,33 +1013,38 @@ rqbiocnt(struct request *r)
 static void
 bio_pageinc(struct bio *bio)
 {
-	struct bio_vec *bv;
+    /* 
+     * Manually incorporated suggested patch from:
+     * http://www.gossamer-threads.com/lists/linux/kernel/1758545    
+     */ 
+    struct bio_vec *bv;
 	struct page *page;
 	int i;
 
 	bio_for_each_segment(bv, bio, i) {
-		page = bv->bv_page;
 		/* Non-zero page count for non-head members of
 		 * compound pages is no longer allowed by the kernel,
-		 * but this has never been seen here.
 		 */
-		if (unlikely(PageCompound(page)))
-			if (compound_trans_head(page) != page) {
-				pr_crit("page tail used for block I/O\n");
-				BUG();
-			}
+		 page = compound_trans_head(bv->bv_page); 
 		atomic_inc(&page->_count);
 	}
 }
 
 static void
 bio_pagedec(struct bio *bio)
-{
-	struct bio_vec *bv;
-	int i;
+{ 
+    /* 
+     * Manually incorporated suggested patch from:
+     * http://www.gossamer-threads.com/lists/linux/kernel/1758545    
+     */ 
+    struct bio_vec *bv;
+    struct page *page;
+    int i;
 
-	bio_for_each_segment(bv, bio, i)
-		atomic_dec(&bv->bv_page->_count);
+    bio_for_each_segment(bv, bio, i) {
+        page = compound_trans_head(bv->bv_page);
+        atomic_dec(&page->_count);
+    } 
 }
 
 static void
@@ -1372,7 +1376,7 @@ static void ktiocomplete_tree(struct frame *f, struct aoe_hdr *hin,
     struct aoeif *ifp;
     struct bio *b;
     struct tree_iface_data *td;
-    char buf[40]; /*FIXME REMOVE*/
+    u64 buf[40]; /*FIXME REMOVE*/
     memset(buf,'\0',40);
 
     /*printk("ktiocomplete_tree : treating a treecmd response!\n");*/
@@ -1400,8 +1404,8 @@ static void ktiocomplete_tree(struct frame *f, struct aoe_hdr *hin,
     case AOECMD_READNODE:
         td->err |= dhin->tree.err;
         bvcpy(f->bv, f->bv_off, skb, dhout->tree.len);
-        skb_copy_bits(skb, 0, buf, dhout->tree.len); /*FIXME REMOVE*/
-        printk("READNODE RSP BUF: [%s]\n", buf);
+        skb_copy_bits(skb, 0, buf, sizeof(u64)); /*FIXME REMOVE*/
+        printk("READNODE RSP BUF: [%llu] (received dhin->tree.len bytes (%llu)) \n", buf[0], dhin->tree.len);
         break;
     }
     
@@ -1473,9 +1477,6 @@ out:
 
 	if (buf && --buf->nframesout == 0 && buf->resid == 0)
     {
-        if(is_tree_cmd(hin->cmd))
-            printk("!! end of tree buffer\n");
-
 		aoe_end_buf(d, buf);
     }
 

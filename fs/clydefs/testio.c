@@ -15,23 +15,32 @@ extern char *dbg_dev;
 static struct block_device *dbg_dev_bd = NULL;
 static u64 tid = U64_MAX_VALUE;
 #define LARGE_BUFFER_LEN 1536
-static u64 large_buffer[LARGE_BUFFER_LEN]; /*1536 * 8b => 12kb buffer*/
+
+u8 first_run = 1;
+u64 *large_snd_buffer, *large_rcv_buffer; /*1536 * 8b => 12288b => 12kb buffer*/
 DECLARE_COMPLETION(test_request_done);
 
 
-static __always_inline void erase_buffer(void)
+static __always_inline void buffer_erase(u64 *buffer)
 {
     int i;
     for (i=0; i<LARGE_BUFFER_LEN; i++)
-        large_buffer[i] = 0;
+        buffer[i] = 0;
 }
 
-static __always_inline void buffer_write_natural_numbers(void)
+static __always_inline void buffer_write_natural_numbers(u64 *buffer)
 {
     int i;
     for (i=0; i<LARGE_BUFFER_LEN; i++) {
-        large_buffer[i] = i+1;
+        buffer[i] = i+1;
     }
+}
+
+static __always_inline void buffer_fill_with(u64 *buffer, u64 fill_val)
+{
+    int i;
+    for(i=0; i<LARGE_BUFFER_LEN; i++)
+        buffer[i] = fill_val;
 }
 
 static __always_inline void mktree(int *retval, u64 *tid)
@@ -50,11 +59,29 @@ static __always_inline void mknode(int *retval, u64 tid, u64 *nid)
 
 static void set_up(void)
 {
+    if (unlikely(first_run)) {
+        first_run = 0;
+        large_rcv_buffer = large_snd_buffer = NULL;
+
+        large_rcv_buffer = (u64*)kmalloc(LARGE_BUFFER_LEN * sizeof(u64), GFP_NOIO | GFP_DMA);
+        if(!large_rcv_buffer) {
+            printk("Failed to allocate large_rcv_buffer\n");
+            BUG();
+        }
+        large_snd_buffer = (u64*)kmalloc(LARGE_BUFFER_LEN * sizeof(u64), GFP_NOIO | GFP_DMA);
+        if(!large_snd_buffer) {
+            printk("Failed to allocate large_snd_buffer\n");
+            BUG();
+        }
+    }
+
     if (cfsio_init()){
         pr_debug("%s:%d - %s() cfsio_init failed\n", __FILE__, __LINE__, __FUNCTION__);
     }
     /*reset completion between tests*/
     INIT_COMPLETION(test_request_done);
+    buffer_write_natural_numbers(large_snd_buffer);
+    buffer_erase(large_rcv_buffer);
 
     tid = U64_MAX_VALUE;
     return;
@@ -69,7 +96,6 @@ static void tear_down(void)
         }
     }
     cfsio_exit();
-    erase_buffer();
     return;
 }
 
@@ -226,7 +252,7 @@ static void test_tree_node_write_small(void)
     retval = cfsio_update_node(
         dbg_dev_bd,
         __test_tree_node_write_small_on_complete, 
-        tid, nid, 0, sizeof(u64)*10, large_buffer
+        tid, nid, 0, sizeof(u64)*10, large_snd_buffer
     );
     printk("%s -- b4 waiting for completion event\n", __FUNCTION__);
     wait_for_completion(&test_request_done);
@@ -247,10 +273,60 @@ static void test_tree_node_write_small_offset(void)
     retval = cfsio_update_node(
         dbg_dev_bd,
         __test_tree_node_write_small_on_complete, 
-        tid, nid, 4050, sizeof(u64)*10, large_buffer /*write data 4050 bytes into stream*/
+        tid, nid, 4050, sizeof(u64)*10, large_snd_buffer /*write data 4050 bytes into stream*/
     );
 
     wait_for_completion(&test_request_done);
+}
+
+
+static void __on_complete_io(struct cfsio_rq_cb_data *req_data, int error)
+{
+    TEST_ASSERT_TRUE(req_data->error == 0, "unexpected bio errors, transient error?\n");
+    complete(&test_request_done); /*allow the test to continue*/
+}
+
+/* 
+ * Write the entirety of 'large_snd_buffer' into a node, 
+ * which should give 12kb of data to be written. 
+ * Afterwards, we verify by reading the node 
+ */
+static void test_tree_node_write_larger_buffer_and_read(void)
+{
+    int retval, i;
+    u64 nid = U64_MAX_VALUE;
+
+    TST_HDR;
+    mktree(&retval, &tid);
+    mknode(&retval, tid, &nid);
+    buffer_fill_with(large_rcv_buffer, U64_MAX_VALUE);
+
+    retval = cfsio_update_node(
+        dbg_dev_bd,
+        __on_complete_io, 
+        tid, nid, 0, sizeof(u64)*LARGE_BUFFER_LEN, large_snd_buffer
+    );
+    wait_for_completion(&test_request_done);
+
+    INIT_COMPLETION(test_request_done); /*reset*/
+    printk("================= READ TIME\n");
+    retval = cfsio_read_node(
+        dbg_dev_bd, __on_complete_io, 
+        tid, nid, 0, sizeof(u64)*LARGE_BUFFER_LEN, large_rcv_buffer
+    );
+    wait_for_completion(&test_request_done);
+    printk("large_snd_buffer: ");
+    print_hex_dump(KERN_EMERG, "", DUMP_PREFIX_NONE, 16, 1, large_snd_buffer, sizeof(u64)*LARGE_BUFFER_LEN, 0);
+    printk("large_rcv_buffer: ");
+    print_hex_dump(KERN_EMERG, "", DUMP_PREFIX_NONE, 16, 1, large_rcv_buffer, sizeof(u64)*LARGE_BUFFER_LEN, 0);
+    for(i=0; i<LARGE_BUFFER_LEN; i++) {
+        TEST_ASSERT_TRUE(
+            large_rcv_buffer[i] == large_snd_buffer[i], 
+            "iter:%d - large_rcv_buffer[i](%llu) == large_snd_buffer[i](%llu) failed\n",
+            i, large_rcv_buffer[i], large_snd_buffer[i]
+        );
+    }
+    printk("test_tree_node_write_larger_buffer_and_read completed\n");
 }
 
 TestRef io_tests(void)
@@ -267,6 +343,7 @@ TestRef io_tests(void)
         TEST(test_tree_remove_nonexisting_node),
         TEST(test_tree_node_write_small),
         TEST(test_tree_node_write_small_offset),
+        TEST(test_tree_node_write_larger_buffer_and_read),
     };
     EMB_UNIT_TESTCALLER(iotest,"iotest",set_up,tear_down, fixtures);
 

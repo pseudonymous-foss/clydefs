@@ -149,7 +149,9 @@ static void fragment_end_io(struct bio *b, int error) {
 
 /** 
  * Allocate bios for both ATA and TREE commands. 
- * @param bt the type of BIO desired, ATA_BIO or TREE_BIO
+ * @param bt the type of BIO desired, ATA_BIO or TREE_BIO 
+ * @param pcount how many vectors to preallocate (1 required per
+ *               page to add)
  * @return NULL on allocation error, otherwise a bio. If a TREE 
  *         bio, the bi_treecmd field points to a struct
  *         tree_iface_data.
@@ -166,11 +168,11 @@ static void fragment_end_io(struct bio *b, int error) {
  * @post request fragment structure's bio ptr points to the 
  *       allocated bio.
  */ 
-static struct bio *__alloc_bio(enum BIO_TYPE bt)
+static struct bio *__alloc_bio(enum BIO_TYPE bt, int pcount)
 {
     struct bio *b = NULL;
     
-    b = bio_alloc_bioset(GFP_ATOMIC, 1, bio_pool); /*FIXME nr_iovec here is going to be dangerous!*/
+    b = bio_alloc_bioset(GFP_ATOMIC, pcount, bio_pool); /*FIXME nr_iovec here is going to be dangerous!*/
     if (!b)
         goto err_alloc_bio;
 
@@ -301,7 +303,7 @@ int cfsio_create_tree_sync(struct block_device *bd, u64 *ret_tid) {
     int retval;
 
     printk("%s called...\n", __FUNCTION__);
-    b = __alloc_bio(TREE_BIO);
+    b = __alloc_bio(TREE_BIO, 1);
 
     if (!b) {
         pr_warn("failed to allocate tree bio\n");
@@ -350,7 +352,7 @@ int cfsio_remove_tree_sync(struct block_device *bd, u64 tid) {
     struct tree_iface_data *td = NULL;
     int retval;
 
-    b = __alloc_bio(TREE_BIO);
+    b = __alloc_bio(TREE_BIO, 1);
     if (!b) {
         pr_warn("failed to allocate tree bio\n");
         retval = -ENOMEM;
@@ -398,7 +400,7 @@ int cfsio_insert_node_sync(struct block_device *bd, u64 *ret_nid, u64 tid) {
     struct tree_iface_data *td = NULL;
     int retval;
 
-    b = __alloc_bio(TREE_BIO);
+    b = __alloc_bio(TREE_BIO, 1);
     if (!b) {
         pr_warn("failed to allocate tree bio\n");
         retval = -ENOMEM;
@@ -445,7 +447,7 @@ int cfsio_remove_node_sync(struct block_device *bd, u64 tid, u64 nid) {
     struct tree_iface_data *td = NULL;
     int retval;
 
-    b = __alloc_bio(TREE_BIO);
+    b = __alloc_bio(TREE_BIO, 1);
     if (!b) {
         pr_warn("failed to allocate tree bio\n");
         retval = -ENOMEM;
@@ -523,7 +525,7 @@ next_chunk:
     printk("chunk_pages: %llu\n", chunk_pages);
     pages_left -= chunk_pages;
 
-    b = __alloc_bio(TREE_BIO);
+    b = __alloc_bio(TREE_BIO, chunk_pages);
     if (!b) {
         pr_warn("failed to allocate tree bio\n");
         retval = -ENOMEM;
@@ -562,14 +564,20 @@ next_chunk:
             bio_page_size = trailing_bytes ? trailing_bytes : PAGE_SIZE;
         }
         
+        /*ensure the address we use is valid for IO use*/
+        CLYDE_ASSERT(virt_addr_valid(data_cur) != 0);
+
         written = bio_add_page(
                 b,virt_to_page(data_cur),
-                bio_page_size,
+                (unsigned int)(bio_page_size & 0xFFFFFFFF),
                 offset_in_page(data_cur)
         );
+
+        printk("data_cur first elem: %llu\n", *((u64*)data_cur));
         if ( unlikely(written == 0) ) { /*add_page either succeeds or returns 0*/
             /*can be due to device limitations, fire off bio now*/
-            printk("%s - bio being broken up as last page add failed\n", __FUNCTION__);
+            printk("%s - bio being broken up as last page add failed (THIS WON'T WORK RIGHT! THINGS WILL BE COPIED OUT OF ORDER)\n", __FUNCTION__);
+            BUG(); /*FIXME: bio_add_page must be doing something to some of the variables - otherwise this really shouldn't fail*/
             break;
         }
         printk("\t\tbio_add_page called successfully (bio_page_size: %d)\n", bio_page_size);
@@ -632,7 +640,7 @@ int cfsio_update_node(struct block_device *bd, cfsio_on_endio_t on_complete, u64
  *       to non-existing sequences entirely.
  */
 int cfsio_read_node(struct block_device *bd, cfsio_on_endio_t on_complete, u64 tid, u64 nid, u64 offset, u64 len, void *data) {
-    return cfsio_data_request(bd, AOECMD_READNODE, WRITE, on_complete, tid, nid, offset, len, data); /*TODO : WRITE => READ*/
+    return cfsio_data_request(bd, AOECMD_READNODE, READ, on_complete, tid, nid, offset, len, data); /*TODO : WRITE => READ*/
 }
 
 /** 
