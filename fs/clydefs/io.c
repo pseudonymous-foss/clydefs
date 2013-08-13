@@ -487,7 +487,7 @@ static int cfsio_data_request(struct block_device *bd, enum AOE_CMD cmd, int rw,
       * investigate the BLOCK_SIZE / PAGE_SIZE issue (read comments @ top)
     */
     int retval;
-    struct bio *b = NULL;
+    struct bio *b;
     struct cfsio_rq *req = NULL;
     u64 chunk_pages;
     struct tree_iface_data *b_td;
@@ -500,6 +500,12 @@ static int cfsio_data_request(struct block_device *bd, enum AOE_CMD cmd, int rw,
         /*need a trailing page which will contain less than a full page of data*/
         pages_left++;
     }
+    printk("data size %llu bytes, => %llu pages of %lu bytes (trailing_bytes: %d)\n",
+           len, pages_left, PAGE_SIZE, trailing_bytes);
+
+    if ( cmd == AOECMD_UPDATENODE )
+        printk("data to write:\n");
+    print_hex_dump(KERN_EMERG, "", DUMP_PREFIX_NONE, 16, 1, data, len, 0);
 
     req = kmem_cache_zalloc(cfsio_rq_pool, GFP_KERNEL);
     if (!req) {
@@ -514,6 +520,7 @@ next_chunk:
     if (chunk_pages > BIO_MAX_PAGES_PER_CHUNK) { /*FIXME; check this*/
         chunk_pages = BIO_MAX_PAGES_PER_CHUNK;
     }
+    printk("chunk_pages: %llu\n", chunk_pages);
     pages_left -= chunk_pages;
 
     b = __alloc_bio(TREE_BIO);
@@ -526,11 +533,12 @@ next_chunk:
     b->bi_end_io = fragment_end_io;
     b->bi_private = req;
 
-    /*offset/len is set per AoE fragment*/
     b_td = (struct tree_iface_data *)b->bi_treecmd;
     b_td->cmd = cmd;
     b_td->tid = tid;
     b_td->nid = nid;
+    b_td->off = offset;
+    b_td->len = len;
 
     if (first_bio) {
         first_bio = 0;
@@ -556,13 +564,15 @@ next_chunk:
         
         written = bio_add_page(
                 b,virt_to_page(data_cur),
-                offset_in_page(data_cur),
-                bio_page_size
+                bio_page_size,
+                offset_in_page(data_cur)
         );
         if ( unlikely(written == 0) ) { /*add_page either succeeds or returns 0*/
             /*can be due to device limitations, fire off bio now*/
+            printk("%s - bio being broken up as last page add failed\n", __FUNCTION__);
             break;
         }
+        printk("\t\tbio_add_page called successfully (bio_page_size: %d)\n", bio_page_size);
 
         data_cur += bio_page_size;
         chunk_pages--;
@@ -622,7 +632,7 @@ int cfsio_update_node(struct block_device *bd, cfsio_on_endio_t on_complete, u64
  *       to non-existing sequences entirely.
  */
 int cfsio_read_node(struct block_device *bd, cfsio_on_endio_t on_complete, u64 tid, u64 nid, u64 offset, u64 len, void *data) {
-    return cfsio_data_request(bd, AOECMD_READNODE, READ, on_complete, tid, nid, offset, len, data);
+    return cfsio_data_request(bd, AOECMD_READNODE, WRITE, on_complete, tid, nid, offset, len, data); /*TODO : WRITE => READ*/
 }
 
 /** 
