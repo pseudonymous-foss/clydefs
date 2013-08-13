@@ -38,7 +38,7 @@ struct btn{
  */
 struct btd{
     /** number of contiguous bytes in this block. */
-    u16 num_bytes;
+    u32 num_bytes;
     /** start of data block */ 
     u8 *data;
 };
@@ -65,8 +65,7 @@ int blinktree_node_insert(u64 tid, u64 nid, void *data);
 int blinktree_node_remove(u64 tid, u64 nid);
 int blinktree_lookup(struct btd **ret_btd, u64 tid, u64 nid);
 
-
-/*static noinline */ int data_block_alloc(struct btd **ret_block_ref, u16 num_bytes);
+/*static noinline */ int data_block_alloc(struct btd **ret_block_ref, u32 num_bytes);
 void data_block_free(struct btd *block);
 
 #ifdef DBG_FUNCS

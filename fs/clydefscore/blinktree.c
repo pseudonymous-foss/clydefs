@@ -228,7 +228,7 @@ static noinline void free_node(struct tree *tree, struct btn *node)
  *  @post On success, *ret_block_ref points to the allocated
  *        data block. On failure, *ret_block_ref points to NULL.
  */ 
-int data_block_alloc(struct btd **ret_block_ref, u16 num_bytes){
+int data_block_alloc(struct btd **ret_block_ref, u32 num_bytes){
     CLYDE_ASSERT(ret_block_ref != NULL);
     CLYDE_ASSERT(*ret_block_ref == NULL); /*ensure we're not losing a ptr*/
 

@@ -89,18 +89,21 @@ static int blinktreeinterface_node_insert(u64 tid, u64 *nid)
     u64 tmp;
     int retval = 0;
     struct btd *db = NULL;
-
-    if ( (retval=data_block_alloc(&db, 1024)) ) {
+    printk("blinktreeinterface_node_insert => 1\n");
+    if ( (retval=data_block_alloc(&db, 1024u*1024u)) ) {
         pr_warn("insert: failed to allocate data block\n");
         goto err_data_alloc;
     }
+    printk("blinktreeinterface_node_insert => 2\n");
     memset(db->data,0,1024); /*clear data*/
-
+    printk("blinktreeinterface_node_insert => 3\n");
     tmp = nidcnt_inc_get();
+    printk("blinktreeinterface_node_insert => 4\n");
     if ( (retval=blinktree_node_insert(tid,tmp,db)) ) {
         pr_warn("insert: insertion failed! tid[%llu], nid[%llu]\n",tid,tmp);
         goto err_insert;
     }
+    printk("blinktreeinterface_node_insert => 5(done)\n");
 
     /* success */
     *nid = tmp;
