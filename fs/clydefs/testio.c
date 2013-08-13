@@ -2,6 +2,7 @@
 #include <embUnit/embUnit.h>
 #include <linux/blkdev.h>
 #include <linux/tree.h>
+#include <linux/completion.h>
 #include "io.h"
 
 #define TEST(tst_fnc) new_TestFixture(#tst_fnc, tst_fnc)
@@ -12,8 +13,26 @@
 
 extern char *dbg_dev;
 static struct block_device *dbg_dev_bd = NULL;
-
 static u64 tid = U64_MAX_VALUE;
+#define LARGE_BUFFER_LEN 1536
+static u64 large_buffer[LARGE_BUFFER_LEN]; /*1536 * 8b => 12kb buffer*/
+DECLARE_COMPLETION(test_request_done);
+
+
+static __always_inline void erase_buffer(void)
+{
+    int i;
+    for (i=0; i<LARGE_BUFFER_LEN; i++)
+        large_buffer[i] = 0;
+}
+
+static __always_inline void buffer_write_natural_numbers(void)
+{
+    int i;
+    for (i=0; i<LARGE_BUFFER_LEN; i++) {
+        large_buffer[i] = i+1;
+    }
+}
 
 static __always_inline void mktree(int *retval, u64 *tid)
 {
@@ -34,6 +53,8 @@ static void set_up(void)
     if (cfsio_init()){
         pr_debug("%s:%d - %s() cfsio_init failed\n", __FILE__, __LINE__, __FUNCTION__);
     }
+    /*reset completion between tests*/
+    INIT_COMPLETION(test_request_done);
 
     tid = U64_MAX_VALUE;
     return;
@@ -48,6 +69,7 @@ static void tear_down(void)
         }
     }
     cfsio_exit();
+    erase_buffer();
     return;
 }
 
@@ -173,16 +195,66 @@ static void test_tree_remove_nonexisting_node(void)
     TEST_ASSERT_TRUE(retval & TERR_NO_SUCH_NODE, "expected TERR_NO_SUCH_NODE(%d) but got (%d)\n", TERR_NO_SUCH_NODE, retval);
 }
 
+
+static void __test_tree_node_write_small_on_complete(struct cfsio_rq_cb_data *req_data, int error)
+{
+    printk("request end_io fired, (%s)\n", __FUNCTION__);
+    TEST_ASSERT_TRUE(req_data->error == 0, "unexpected bio errors, transient error?\n");
+
+    TEST_ASSERT_TRUE(
+        atomic_read(&req_data->bio_num) == 1, 
+        "wrote less than a page, expected just ONE bio, got: %d\n", 
+        atomic_read(&req_data->bio_num)
+    );
+    complete(&test_request_done); /*allow the test to continue*/
+}
+
+/* 
+  write less than a page's worth (4kb) of data to the node, no offset
+  --blind test-- I cannot verify the result before employing read.
+*/
+static void test_tree_node_write_small(void)
+{
+    int retval;
+    u64 nid = NID_LEGAL_BOGUS_VAL;
+
+    TST_HDR;
+
+    mktree(&retval, &tid);
+    mknode(&retval, tid, &nid);
+
+    retval = cfsio_update_node(
+        dbg_dev_bd,
+        __test_tree_node_write_small_on_complete, 
+        tid, nid, 0, sizeof(u64)*10, large_buffer
+    );
+    printk("%s -- b4 waiting for completion event\n", __FUNCTION__);
+    wait_for_completion(&test_request_done);
+    printk("%s -- after waiting for completion event (done)\n", __FUNCTION__);
+}
+
+/*Writing less than a page's worth of data, this time at an offset*/
+static void test_tree_node_write_small_offset(void)
+{
+    int retval;
+    u64 nid = NID_LEGAL_BOGUS_VAL;
+
+    TST_HDR;
+
+    mktree(&retval, &tid);
+    mknode(&retval, tid, &nid);
+
+    retval = cfsio_update_node(
+        dbg_dev_bd,
+        __test_tree_node_write_small_on_complete, 
+        tid, nid, 4050, sizeof(u64)*10, large_buffer /*write data 4050 bytes into stream*/
+    );
+
+    wait_for_completion(&test_request_done);
+}
+
 TestRef io_tests(void)
 {
-    dbg_dev_bd = blkdev_get_by_path(dbg_dev, FMODE_READ|FMODE_WRITE, NULL);
-	if (!dbg_dev_bd || IS_ERR(dbg_dev_bd)) {
-		printk(KERN_ERR "add failed: can't open block device %s: %ld\n", dbg_dev, PTR_ERR(dbg_dev_bd));
-		return NULL;
-	} else {
-        printk("device %s added.. \n", dbg_dev);
-    }
-
     EMB_UNIT_TESTFIXTURES(fixtures)
     {
         TEST(test_tree_create),
@@ -193,8 +265,18 @@ TestRef io_tests(void)
         TEST(test_tree_remove_node),
         TEST(test_tree_remove_node_from_nonexisting_tree),
         TEST(test_tree_remove_nonexisting_node),
+        TEST(test_tree_node_write_small),
+        TEST(test_tree_node_write_small_offset),
     };
     EMB_UNIT_TESTCALLER(iotest,"iotest",set_up,tear_down, fixtures);
+
+    dbg_dev_bd = blkdev_get_by_path(dbg_dev, FMODE_READ|FMODE_WRITE, NULL);
+	if (!dbg_dev_bd || IS_ERR(dbg_dev_bd)) {
+		printk(KERN_ERR "add failed: can't open block device %s: %ld\n", dbg_dev, PTR_ERR(dbg_dev_bd));
+		return NULL;
+	} else {
+        printk("device %s added.. \n", dbg_dev);
+    }
 
     return (TestRef)&iotest;
 }

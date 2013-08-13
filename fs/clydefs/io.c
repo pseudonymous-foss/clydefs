@@ -4,6 +4,7 @@
 #include <linux/pagemap.h>
 #include <linux/blkdev.h>
 #include <linux/tree.h>
+#include "global.h"
 #include "io.h"
 
 /* 
@@ -24,6 +25,9 @@
  
     * FIXME -- fix sync commands so that the correct error is returned, not just the
         bio end_io retval
+ 
+    * FIXME -- bad API, on_complete provides the error value via the req cb struct
+        AND as a separate parameter, 'error'.
 */
 
 struct bio_page_data {
@@ -99,14 +103,20 @@ static void fragment_end_io(struct bio *b, int error) {
 
     td = (struct tree_iface_data*)b->bi_treecmd;
     req = (struct cfsio_rq *)b->bi_private;
+
+    printk(
+        "%s called\n\t\t(bio_num:%d) (bio_completed:%d) initialised(%d)\n",
+        __FUNCTION__, atomic_read(&req->cb_data.bio_num), 
+        atomic_read(&req->bio_completed), atomic_read(&req->initialised)
+    );
     
     /*Set the fields required for a valid object state*/
     req->cb_data.error |= error;
 
     /*add fragment to the list of fragments making up the request*/
-    spin_lock(&req->cb_data.lst_lock);
     frag = tbio_get_frag(b);
-    list_add(&req->cb_data.lst, &frag->lst);
+    spin_lock(&req->cb_data.lst_lock);
+    list_add(&frag->lst, &req->cb_data.lst);
     spin_unlock(&req->cb_data.lst_lock);
 
     /*finally, mark this fragment as completed*/
@@ -115,12 +125,15 @@ static void fragment_end_io(struct bio *b, int error) {
     if (atomic_read(&req->initialised) == 0) {
         /*this bio completed before all bios of the 
           request were dispatched, nothing further to do*/
+        printk("\t\tbio fragment_end_io called before request initialised, don't process further\n");
         return;
     }
     
-    if (atomic_add_return(1, &req->bio_completed) == atomic_read(&req->cb_data.bio_num)) {
+    if (atomic_read(&req->bio_completed) == atomic_read(&req->cb_data.bio_num)) {
+        printk("\t\tALL BIO'S COMPLETED!!!\n\t\t(time to fire usr cb)\n");
         /*all bio's completed*/
         if (atomic_add_return(1, &req->initialised) != 2) {
+            printk("\t\t someone beat us to handling the completion code\n");
             return; /*someone else beat us to it*/
         }
         /*holding the last bio of the request*/
@@ -147,6 +160,11 @@ static void fragment_end_io(struct bio *b, int error) {
  * @note you're still required to specify a function to call 
  *       once the IO completes.
  * @post returned bio reference with increased count 
+ * @post bio->treecmd points to the treecmd structure, which is 
+ *       contained in a request fragment structure as member
+ *       'td'
+ * @post request fragment structure's bio ptr points to the 
+ *       allocated bio.
  */ 
 static struct bio *__alloc_bio(enum BIO_TYPE bt)
 {
@@ -160,13 +178,12 @@ static struct bio *__alloc_bio(enum BIO_TYPE bt)
 
     if (bt == TREE_BIO) {
         struct cfsio_rq_frag *frag = NULL;
-        frag = kmem_cache_alloc(cfsio_rqfrag_pool, GFP_ATOMIC);
+        frag = kmem_cache_zalloc(cfsio_rqfrag_pool, GFP_ATOMIC);
         if (!frag) {
             pr_debug("failed to allocate request fragment for bio\n");
             goto err_alloc_fragment;
         }
-        memset(frag, 0, sizeof *frag);
-
+        frag->b = b;
         b->bi_treecmd = &frag->td;
         b->bi_sector = 0; /*using td->off to mark offsets for read/write*/
     } else {
@@ -190,13 +207,19 @@ err_alloc_bio:
  */ 
 static void __dealloc_bio(struct bio *b)
 {
+    printk("%s called\n", __FUNCTION__);
+    CLYDE_ASSERT(b != NULL);
     if (b->bi_treecmd) { /*assume tree bio*/
         struct cfsio_rq_frag *frag = tbio_get_frag(b);
+        CLYDE_ASSERT(frag != NULL);
         kmem_cache_free(cfsio_rqfrag_pool, frag);
         b->bi_treecmd = NULL;
         b->bi_private = NULL;
     }
+    printk("%s -- bio->bio_cnt (get/put var): %d\n", __FUNCTION__, atomic_read(&b->bi_cnt));
+    CLYDE_ASSERT( atomic_read(&b->bi_cnt) == 1);
     bio_put(b);
+    
 }
 
 /** 
@@ -212,11 +235,15 @@ static void __free_tbio_fragments(struct cfsio_rq *rq)
     
     struct cfsio_rq_frag *frag;
     struct list_head *head, *pos, *nxt;
-
+    printk("%s called\n", __FUNCTION__);
     head = &rq->cb_data.lst;
+    printk("\t\tb4 list traversal\n");
     list_for_each_safe(pos,nxt, head) {
+        printk("\t\t\tlist_entry(...)\n");
         frag = list_entry(pos, struct cfsio_rq_frag, lst);
+        printk("\t\t\tlist_del(...)\n");
         list_del(pos);              /*unlink*/
+        printk("\t\t\t__dealloc_bio(...)\n");
         __dealloc_bio(frag->b);     /*clean up bio & fragment memory use*/
     }
 }
@@ -232,7 +259,7 @@ static void __free_tbio_fragments(struct cfsio_rq *rq)
 static void __submit_bio_sync_end_io(struct bio *b, int error)
 {
 	struct submit_syncbio_data *ret = b->bi_private;
-    printk("%s called...\n", __FUNCTION__);
+        printk("%s called...\n", __FUNCTION__);
 	ret->error = error;
 	complete(&ret->event);
 }
@@ -474,7 +501,7 @@ static int cfsio_data_request(struct block_device *bd, enum AOE_CMD cmd, int rw,
         pages_left++;
     }
 
-    req = kmem_cache_alloc(cfsio_rq_pool, GFP_KERNEL);
+    req = kmem_cache_zalloc(cfsio_rq_pool, GFP_KERNEL);
     if (!req) {
         pr_err("Failed to allocate request structure\n");
         retval = -ENOMEM;
@@ -506,7 +533,6 @@ next_chunk:
     b_td->nid = nid;
 
     if (first_bio) {
-        struct cfsio_rq_frag *f = NULL;
         first_bio = 0;
 
         /*initialise request structure and add this bio as the first element*/
@@ -514,8 +540,6 @@ next_chunk:
         req->cb_data.data = data;
         req->cb_data.data_len = len;
         req->endio_cb = on_complete;
-        f = tbio_get_frag(b);
-        list_add(&f->lst, &req->cb_data.lst);
     }
 
     while(chunk_pages)
@@ -544,19 +568,20 @@ next_chunk:
         chunk_pages--;
     }
 
-    
     atomic_inc(&req->cb_data.bio_num);
-
-    submit_bio(rw, b);
-    bio_put(b);
-
     if(unlikely(chunk_pages)) {
         pages_left += chunk_pages; /*didn't finish our chunk, return leftovers*/
     }
+    
     if(pages_left) {
+        submit_bio(rw, b);
+        bio_put(b);
         goto next_chunk;
     } else {
         atomic_set(&req->initialised, 1);
+        smp_mb();
+        submit_bio(rw, b);
+        bio_put(b);
     }
 
 err_alloc_bio:
