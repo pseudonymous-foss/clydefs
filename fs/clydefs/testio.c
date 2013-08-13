@@ -329,6 +329,60 @@ static void test_tree_node_write_larger_buffer_and_read(void)
     printk("test_tree_node_write_larger_buffer_and_read completed\n");
 }
 
+/* 
+ * Start at an offset and write the remainder of the 12kb buffer 
+ * 'large_snd_buffer' into a node, then read it back and ensure the 
+ * data is the same. 
+ *  
+ * Test carried out with offsets from offset_start to offset_end with step 1 
+ *  
+ * This test exercises ability to both specify offsets which produces addresses 
+ * not fitting machine's int alignment AND the ability to read any length, not 
+ * just a multiple of sizeof(int) bytes. 
+ */
+static void test_tree_node_write_larger_buffer_and_read_various_offsets(void)
+{
+    int retval;
+    u64 nid;
+    u64 write_offset, len;
+    u8 *rcv_buf_start = (u8*)large_rcv_buffer;
+    u8 *snd_buf_start = (u8*)large_snd_buffer;
+    u64 offset_start = 1ULL; /*offset to start at*/
+    u64 offset_end = 10ULL; /*offset to end at*/
+    u8 *snd_buf_ptr;
+
+    TST_HDR;
+    mktree(&retval, &tid);
+    for(write_offset = offset_start, len = (LARGE_BUFFER_LEN*sizeof(u64)) - offset_start; write_offset <= offset_end; write_offset++, len--){
+        nid = U64_MAX_VALUE;
+        mknode(&retval, tid, &nid);
+        buffer_erase(large_rcv_buffer);
+        snd_buf_ptr = snd_buf_start + write_offset;
+
+        retval = cfsio_update_node(
+            dbg_dev_bd,
+            __on_complete_io, 
+            tid, nid, write_offset, len, snd_buf_ptr
+        );
+        wait_for_completion(&test_request_done);
+
+        INIT_COMPLETION(test_request_done); /*reset*/
+        retval = cfsio_read_node(
+            dbg_dev_bd, __on_complete_io, 
+            tid, nid, write_offset, len, large_rcv_buffer
+        );
+        wait_for_completion(&test_request_done);
+        printk("Checking received data when writing len(%llu) offset(%llu)\n", len, write_offset);
+        
+        print_hex_dump(KERN_EMERG, "rcv: ", DUMP_PREFIX_NONE, 16, 1, rcv_buf_start, sizeof(u64)*8, 0);
+        print_hex_dump(KERN_EMERG, "snd: ", DUMP_PREFIX_NONE, 16, 1, snd_buf_ptr, sizeof(u64)*8, 0);
+        TEST_ASSERT_TRUE( memcmp(rcv_buf_start,snd_buf_ptr,len) == 0, "received buffer did not contain the same data as was sent\n" );
+        INIT_COMPLETION(test_request_done); /*reset*/
+    }
+    
+    printk("%s completed\n", __FUNCTION__);
+}
+
 TestRef io_tests(void)
 {
     EMB_UNIT_TESTFIXTURES(fixtures)
@@ -344,6 +398,7 @@ TestRef io_tests(void)
         TEST(test_tree_node_write_small),
         TEST(test_tree_node_write_small_offset),
         TEST(test_tree_node_write_larger_buffer_and_read),
+        TEST(test_tree_node_write_larger_buffer_and_read_various_offsets),
     };
     EMB_UNIT_TESTCALLER(iotest,"iotest",set_up,tear_down, fixtures);
 
