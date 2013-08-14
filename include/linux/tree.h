@@ -1,6 +1,10 @@
 #ifndef __LINUX_TREE_H
 #define __LINUX_TREE_H
 
+/*minimum values given to tree and node identifiers*/
+#define TREE_MIN_TID 1
+#define TREE_MIN_NID 1
+
 enum TERR {
     /**general error, always set if an error of any kind 
      * occurred. */ 
