@@ -18,7 +18,7 @@
  */
 
 DEFINE_SPINLOCK(nidcnt_lock);
-static u64 nidcnt; /*nids are unsigned 64 bit values, atomic64_t uses signed values*/
+static u64 nidcnt = 1; /*nids are unsigned 64 bit values, atomic64_t uses signed values*/
 static __always_inline u64 nidcnt_inc_get(void)
 {
     int reserved_val = 0;
