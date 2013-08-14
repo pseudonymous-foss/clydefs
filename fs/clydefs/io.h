@@ -35,21 +35,20 @@ struct cfsio_rq_cb_data {
     struct list_head lst;
     spinlock_t lst_lock;
 
-    /** 
-     * an error field which is non-zero provided any of the bios 
-     * returned an error. Check the error field of each fragment to 
-     * determine which failed. 
-     */ 
-    int error;
-
     /**supplied data pointer, if any*/ 
     void *data;
     /**length of supplied data buffer */ 
     u64 data_len;
 };
 
-/** function to call once an io request has completed */
-typedef void (*cfsio_on_endio_t)(struct cfsio_rq_cb_data *req_data, int error);
+/** 
+ *  function to call once an io request has completed
+ *  @param req_data data associated the request, such as number
+ *                  of associated bios, a list of fragments etc.
+ *  @param endio_cb_data user-supplied pointer
+ *  @param error whether the request has had an error or not.
+ */
+typedef void (*cfsio_on_endio_t)(struct cfsio_rq_cb_data *req_data, void *endio_cb_data, int error);
 
 int cfsio_init(void);
 
@@ -63,8 +62,12 @@ int cfsio_insert_node_sync(struct block_device *bd, u64 *ret_nid, u64 tid);
 
 int cfsio_remove_node_sync(struct block_device *bd, u64 tid, u64 nid);
 
-int cfsio_update_node(struct block_device *bd, cfsio_on_endio_t on_complete, u64 tid, u64 nid, u64 offset, u64 len, void *data);
+int cfsio_update_node(struct block_device *bd, cfsio_on_endio_t on_complete, void *endio_cb_data, u64 tid, u64 nid, u64 offset, u64 len, void *data);
 
-int cfsio_read_node(struct block_device *bd, cfsio_on_endio_t on_complete, u64 tid, u64 nid, u64 offset, u64 len, void *data);
+int cfsio_read_node(struct block_device *bd, cfsio_on_endio_t on_complete, void *endio_cb_data, u64 tid, u64 nid, u64 offset, u64 len, void *data);
+
+int cfsio_read_node_sync(struct block_device *bd, cfsio_on_endio_t on_complete, void *endio_cb_data, u64 tid, u64 nid, u64 offset, u64 len, void *data);
+
+int cfsio_update_node_sync(struct block_device *bd, cfsio_on_endio_t on_complete, void *endio_cb_data, u64 tid, u64 nid, u64 offset, u64 len, void *data);
 
 #endif //__CLYDEFS_IO_H

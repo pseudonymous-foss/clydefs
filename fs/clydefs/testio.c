@@ -222,10 +222,10 @@ static void test_tree_remove_nonexisting_node(void)
 }
 
 
-static void __test_tree_node_write_small_on_complete(struct cfsio_rq_cb_data *req_data, int error)
+static void __test_tree_node_write_small_on_complete(struct cfsio_rq_cb_data *req_data, void *data, int error)
 {
     printk("request end_io fired, (%s)\n", __FUNCTION__);
-    TEST_ASSERT_TRUE(req_data->error == 0, "unexpected bio errors, transient error?\n");
+    TEST_ASSERT_TRUE(error == 0, "unexpected bio errors, transient error?\n");
 
     TEST_ASSERT_TRUE(
         atomic_read(&req_data->bio_num) == 1, 
@@ -251,7 +251,7 @@ static void test_tree_node_write_small(void)
 
     retval = cfsio_update_node(
         dbg_dev_bd,
-        __test_tree_node_write_small_on_complete, 
+        __test_tree_node_write_small_on_complete, NULL, 
         tid, nid, 0, sizeof(u64)*10, large_snd_buffer
     );
     printk("%s -- b4 waiting for completion event\n", __FUNCTION__);
@@ -272,7 +272,7 @@ static void test_tree_node_write_small_offset(void)
 
     retval = cfsio_update_node(
         dbg_dev_bd,
-        __test_tree_node_write_small_on_complete, 
+        __test_tree_node_write_small_on_complete, NULL, 
         tid, nid, 4050, sizeof(u64)*10, large_snd_buffer /*write data 4050 bytes into stream*/
     );
 
@@ -280,9 +280,9 @@ static void test_tree_node_write_small_offset(void)
 }
 
 
-static void __on_complete_io(struct cfsio_rq_cb_data *req_data, int error)
+static void __on_complete_io(struct cfsio_rq_cb_data *req_data, void *data, int error)
 {
-    TEST_ASSERT_TRUE(req_data->error == 0, "unexpected bio errors, transient error?\n");
+    TEST_ASSERT_TRUE(error == 0, "unexpected bio errors, transient error?\n");
     complete(&test_request_done); /*allow the test to continue*/
 }
 
@@ -303,7 +303,7 @@ static void test_tree_node_write_larger_buffer_and_read(void)
 
     retval = cfsio_update_node(
         dbg_dev_bd,
-        __on_complete_io, 
+        __on_complete_io, NULL,
         tid, nid, 0, sizeof(u64)*LARGE_BUFFER_LEN, large_snd_buffer
     );
     wait_for_completion(&test_request_done);
@@ -311,7 +311,7 @@ static void test_tree_node_write_larger_buffer_and_read(void)
     INIT_COMPLETION(test_request_done); /*reset*/
     printk("================= READ TIME\n");
     retval = cfsio_read_node(
-        dbg_dev_bd, __on_complete_io, 
+        dbg_dev_bd, __on_complete_io, NULL,
         tid, nid, 0, sizeof(u64)*LARGE_BUFFER_LEN, large_rcv_buffer
     );
     wait_for_completion(&test_request_done);
@@ -361,14 +361,14 @@ static void test_tree_node_write_larger_buffer_and_read_various_offsets(void)
 
         retval = cfsio_update_node(
             dbg_dev_bd,
-            __on_complete_io, 
+            __on_complete_io, NULL,
             tid, nid, write_offset, len, snd_buf_ptr
         );
         wait_for_completion(&test_request_done);
 
         INIT_COMPLETION(test_request_done); /*reset*/
         retval = cfsio_read_node(
-            dbg_dev_bd, __on_complete_io, 
+            dbg_dev_bd, __on_complete_io, NULL,
             tid, nid, write_offset, len, large_rcv_buffer
         );
         wait_for_completion(&test_request_done);

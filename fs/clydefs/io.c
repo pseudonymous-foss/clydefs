@@ -4,14 +4,13 @@
 #include <linux/pagemap.h>
 #include <linux/blkdev.h>
 #include <linux/tree.h>
-#include "global.h"
+#include <linux/completion.h>
+
+#include "clydefs.h"
 #include "io.h"
 
 /* 
     Status
- 
-    * __alloc_bio currently preallocates just one io vector, we'll be needing one per page.
-        NEED to make this an argument to supply allocation.
  
     * update_node currenly does all sorts of funky calculations which may presuppose the
         block size being less than the page size itself, go through it and work out if
@@ -22,9 +21,6 @@
  
     * FIXME -- add TERR_IO_ERR to account for partially completed requests or single-bio requests
         where the bio fails.
- 
-    * FIXME -- fix sync commands so that the correct error is returned, not just the
-        bio end_io retval
  
     * FIXME -- bad API, on_complete provides the error value via the req cb struct
         AND as a separate parameter, 'error'.
@@ -40,6 +36,18 @@ struct submit_syncbio_data {
 	int error;
 };
 
+/** 
+ * Used to wrap synchronous data requests.
+ */
+struct cfsio_sync_data_request {
+    /**Completion, signal this when request is done */ 
+    struct completion req_complete;
+    /**User-supplied on_complete callback, will be run once 
+     * operation finishes.  */
+    cfsio_on_endio_t on_complete_cb;
+    /**User-supplied data, to be supplied 'on_complete_usr' */ 
+    void *on_comlete_cb_data;
+};
 
 
 /** 
@@ -51,12 +59,22 @@ struct cfsio_rq {
     /** The fields of the request directly available to the
      *  end_io functions */
     struct cfsio_rq_cb_data cb_data;
+
+    /** 
+     * an error field which is non-zero provided any of the bios 
+     * returned an error. Check the error field of each fragment to 
+     * determine which failed. 
+     */
+    int error;
+
     /** is set only when all requests have been counted. To
      *  prevent premature completion before the last requests
      *  have been issued. */
     atomic_t initialised;
     /** function to call once the request is fully completed */
     cfsio_on_endio_t endio_cb;
+    /** data to be supplied cfsio_on_endio_t callback */
+    void *endio_cb_data;
 };
 
 static struct kmem_cache *cfsio_rqfrag_pool = NULL;
@@ -111,7 +129,7 @@ static void fragment_end_io(struct bio *b, int error) {
     );
     
     /*Set the fields required for a valid object state*/
-    req->cb_data.error |= error;
+    req->error |= error;
 
     /*add fragment to the list of fragments making up the request*/
     frag = tbio_get_frag(b);
@@ -139,7 +157,7 @@ static void fragment_end_io(struct bio *b, int error) {
         /*holding the last bio of the request*/
 
         /*invoke user callback*/
-        req->endio_cb(&req->cb_data,req->cb_data.error);
+        req->endio_cb(&req->cb_data, req->endio_cb_data, req->error);
 
         /*request finished, free fragments and request*/
         __free_tbio_fragments(req);
@@ -479,9 +497,13 @@ out:
 err_alloc_bio:
     return retval;
 }
-
+    
+/** 
+ *  Issue a tree data request (read/update).
+ *  @return 0 on success, -ENOMEM if any allocation fails.
+ */ 
 static int cfsio_data_request(struct block_device *bd, enum AOE_CMD cmd, int rw, cfsio_on_endio_t on_complete, 
-                              u64 tid, u64 nid, u64 offset, u64 len, void *data)
+                              void *endio_cb_data, u64 tid, u64 nid, u64 offset, u64 len, void *data)
 {
     /* 
       Issues:
@@ -550,6 +572,7 @@ next_chunk:
         req->cb_data.data = data;
         req->cb_data.data_len = len;
         req->endio_cb = on_complete;
+        req->endio_cb_data = endio_cb_data;
     }
 
     while(chunk_pages)
@@ -612,6 +635,7 @@ err_alloc_req:
  *  
  *  @param on_complete function to call once all fragments of
  *                     the command have completed.
+ *  @param optional additional data to supply callback.
  *  @param tid the id of the tree containing the node
  *  @param nid the id of the node to update
  *  @param offset the offset, in bytes, to write the data
@@ -621,8 +645,15 @@ err_alloc_req:
  *               identified by tid by writing the supplied data
  *               at the supplied offset in the node.
  */
-int cfsio_update_node(struct block_device *bd, cfsio_on_endio_t on_complete, u64 tid, u64 nid, u64 offset, u64 len, void *data) {
-    return cfsio_data_request(bd, AOECMD_UPDATENODE, WRITE, on_complete, tid, nid, offset, len, data);
+int cfsio_update_node(
+    struct block_device *bd, 
+    cfsio_on_endio_t on_complete, void *endio_cb_data, 
+    u64 tid, u64 nid, u64 offset, u64 len, void *data) {
+    return cfsio_data_request(
+        bd, AOECMD_UPDATENODE, WRITE, 
+        on_complete, endio_cb_data,
+        tid, nid, offset, len, data
+    );
 }
 
 /**
@@ -630,6 +661,8 @@ int cfsio_update_node(struct block_device *bd, cfsio_on_endio_t on_complete, u64
  *  
  * @param on_complete function to call once all fragments of the 
  *                    command have completed.
+ * @param endio_cb_data optional additional data to supply 
+ *                      callback.
  * @param tid the id of the tree containing the node
  * @param nid the id of the node to read from
  * @param offset the offset within the node from which to begin reading
@@ -639,8 +672,123 @@ int cfsio_update_node(struct block_device *bd, cfsio_on_endio_t on_complete, u64
  * @todo what about reading past the end, what attempting reads 
  *       to non-existing sequences entirely.
  */
-int cfsio_read_node(struct block_device *bd, cfsio_on_endio_t on_complete, u64 tid, u64 nid, u64 offset, u64 len, void *data) {
-    return cfsio_data_request(bd, AOECMD_READNODE, READ, on_complete, tid, nid, offset, len, data); /*TODO : WRITE => READ*/
+int cfsio_read_node(
+    struct block_device *bd, 
+    cfsio_on_endio_t on_complete, void *endio_cb_data,
+    u64 tid, u64 nid, u64 offset, u64 len, void *data) {
+    return cfsio_data_request(
+        bd, AOECMD_READNODE, READ, 
+        on_complete, endio_cb_data,
+        tid, nid, offset, len, data
+    );
+}
+
+
+
+static void __on_data_request_complete_sync(struct cfsio_rq_cb_data *req_data, void *cb_data, int error)
+{
+    /*The idea behind taking a callback for a synchronous function is to easily allow the user 
+      direct access to the request before everything is garbage-collected (which happens at
+      the end of this function call) */
+    struct cfsio_sync_data_request *sync_req = cb_data;
+    CLYDE_ASSERT(cb_data != NULL);
+
+    /*pass control to user-supplied callback*/
+    sync_req->on_complete_cb(req_data, sync_req->on_comlete_cb_data, error);
+    
+    complete(&sync_req->req_complete); /*request is done, let caller proceed*/
+
+}
+
+/** 
+ * Perform a synchronous tree data request. 
+ * @note wraps 'cfsio_data_request' to become a synchronous call 
+ * @return 0 on success, negative on error 
+ */ 
+static __always_inline int cfsio_data_request_sync(
+    struct block_device *bd, enum AOE_CMD cmd, int rw,
+    cfsio_on_endio_t on_complete, void *endio_cb_data,
+    u64 tid, u64 nid, u64 offset, u64 len, void *data)
+{
+    int retval;
+    struct cfsio_sync_data_request sync_req;
+
+    /*initialise structure which will be used to invoke the user-supplied 
+      callback with the user-supplied callback data - also houses the
+      completion used to make the function synchronous.*/
+    sync_req.on_complete_cb = on_complete;
+    sync_req.on_comlete_cb_data = endio_cb_data;
+    INIT_COMPLETION(sync_req.req_complete);
+
+    retval = cfsio_data_request(
+        bd, cmd, rw, 
+        __on_data_request_complete_sync, &sync_req, 
+        tid, nid, offset, len, data
+    );
+
+    if (retval) { /*error, such as -ENOMEM*/
+        return retval;
+    }
+
+    wait_for_completion(&sync_req.req_complete);
+
+    return 0; /*success*/
+}
+
+
+/**
+ * Read node data, synchronous function.
+ *  
+ * @param on_complete function to call once all fragments of the 
+ *                    command have completed.
+ * @param endio_cb_data optional additional data to supply 
+ *                      callback.
+ * @param tid the id of the tree containing the node
+ * @param nid the id of the node to read from
+ * @param offset the offset within the node from which to begin reading
+ * @param len the number of bytes to read 
+ * @description reads the specified sequence of bytes from the 
+ *              node.
+ * @todo what about reading past the end, what attempting reads 
+ *       to non-existing sequences entirely.
+ */
+int cfsio_read_node_sync(
+    struct block_device *bd, 
+    cfsio_on_endio_t on_complete, void *endio_cb_data,
+    u64 tid, u64 nid, u64 offset, u64 len, void *data)
+{
+    return cfsio_data_request_sync(
+        bd, AOECMD_READNODE, READ, 
+        on_complete, endio_cb_data, 
+        tid, nid, offset, len, data
+    );
+}
+
+/**
+ * Update node data, synchronous function.
+ *  
+ * @param on_complete function to call once all fragments of the 
+ *                    command have completed.
+ * @param endio_cb_data optional additional data to supply 
+ *                      callback.
+ * @param tid the id of the tree containing the node
+ * @param nid the id of the node to read from
+ * @param offset the offset within the node from which to begin reading
+ * @param len the number of bytes to read 
+ * @description updates the node identified by nid in the tree
+ *               identified by tid by writing the supplied data
+ *               at the supplied offset in the node.
+ */
+int cfsio_update_node_sync(
+    struct block_device *bd, 
+    cfsio_on_endio_t on_complete, void *endio_cb_data,
+    u64 tid, u64 nid, u64 offset, u64 len, void *data)
+{
+    return cfsio_data_request_sync(
+        bd, AOECMD_UPDATENODE, WRITE, 
+        on_complete, endio_cb_data, 
+        tid, nid, offset, len, data
+    );
 }
 
 /** 
