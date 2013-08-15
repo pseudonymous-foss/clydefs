@@ -47,6 +47,9 @@ struct cfsio_sync_data_request {
     cfsio_on_endio_t on_complete_cb;
     /**User-supplied data, to be supplied 'on_complete_usr' */ 
     void *on_comlete_cb_data;
+    /**Stores the error-value passed to the cfsio_on_endio_t 
+     * callback */ 
+    int error; 
 };
 
 
@@ -503,7 +506,7 @@ err_alloc_bio:
  *  @return 0 on success, -ENOMEM if any allocation fails.
  */ 
 static int cfsio_data_request(struct block_device *bd, enum AOE_CMD cmd, int rw, cfsio_on_endio_t on_complete, 
-                              void *endio_cb_data, u64 tid, u64 nid, u64 offset, u64 len, void *data)
+                              void *endio_cb_data, u64 tid, u64 nid, u64 offset, u64 len, void *buffer)
 {
     /* 
       Issues:
@@ -516,7 +519,7 @@ static int cfsio_data_request(struct block_device *bd, enum AOE_CMD cmd, int rw,
     u64 chunk_pages;
     struct tree_iface_data *b_td;
     u8 first_bio = 1;
-    u8 *data_cur = data; /*ptr to what next page should contain*/
+    u8 *buffer_cur = buffer; /*ptr to what next page should contain*/
     /*total number of pages to transfer*/
     u64 pages_left = len >> PAGE_SHIFT; /*how many times len divides by PAGE_SIZE*/
     int trailing_bytes = len & ((1 << PAGE_SHIFT) - 1); /*would there have been a remainder of that division?*/
@@ -524,12 +527,12 @@ static int cfsio_data_request(struct block_device *bd, enum AOE_CMD cmd, int rw,
         /*need a trailing page which will contain less than a full page of data*/
         pages_left++;
     }
-    printk("data size %llu bytes, => %llu pages of %lu bytes (trailing_bytes: %d)\n",
+    printk("buf size %llu bytes, => %llu pages of %lu bytes (trailing_bytes: %d)\n",
            len, pages_left, PAGE_SIZE, trailing_bytes);
 
     if ( cmd == AOECMD_UPDATENODE )
-        printk("data to write:\n");
-    print_hex_dump(KERN_EMERG, "", DUMP_PREFIX_NONE, 16, 1, data, len, 0);
+        printk("buf to write:\n");
+    print_hex_dump(KERN_EMERG, "", DUMP_PREFIX_NONE, 16, 1, buffer, len, 0);
 
     req = kmem_cache_zalloc(cfsio_rq_pool, GFP_KERNEL);
     if (!req) {
@@ -569,8 +572,8 @@ next_chunk:
 
         /*initialise request structure and add this bio as the first element*/
         __cfsio_rq_init(req);
-        req->cb_data.data = data;
-        req->cb_data.data_len = len;
+        req->cb_data.buffer = buffer;
+        req->cb_data.buffer_len = len;
         req->endio_cb = on_complete;
         req->endio_cb_data = endio_cb_data;
     }
@@ -588,15 +591,15 @@ next_chunk:
         }
         
         /*ensure the address we use is valid for IO use*/
-        CLYDE_ASSERT(virt_addr_valid(data_cur) != 0);
+        CLYDE_ASSERT(virt_addr_valid(buffer_cur) != 0);
 
         written = bio_add_page(
-                b,virt_to_page(data_cur),
+                b,virt_to_page(buffer_cur),
                 (unsigned int)(bio_page_size & 0xFFFFFFFF),
-                offset_in_page(data_cur)
+                offset_in_page(buffer_cur)
         );
 
-        printk("data_cur first elem: %llu\n", *((u64*)data_cur));
+        printk("buffer_cur first elem: %llu\n", *((u64*)buffer_cur));
         if ( unlikely(written == 0) ) { /*add_page either succeeds or returns 0*/
             /*can be due to device limitations, fire off bio now*/
             printk("%s - bio being broken up as last page add failed (THIS WON'T WORK RIGHT! THINGS WILL BE COPIED OUT OF ORDER)\n", __FUNCTION__);
@@ -605,7 +608,7 @@ next_chunk:
         }
         printk("\t\tbio_add_page called successfully (bio_page_size: %d)\n", bio_page_size);
 
-        data_cur += bio_page_size;
+        buffer_cur += bio_page_size;
         chunk_pages--;
     }
 
@@ -631,7 +634,7 @@ err_alloc_req:
 }
 
 /** 
- *  update data in node.
+ *  Update data in node.
  *  
  *  @param on_complete function to call once all fragments of
  *                     the command have completed.
@@ -640,7 +643,7 @@ err_alloc_req:
  *  @param nid the id of the node to update
  *  @param offset the offset, in bytes, to write the data
  *  @param len the length, in bytes, of the data to write
- *  @param data the data to write
+ *  @param buffer the data to write
  *  @description updates the node identified by nid in the tree
  *               identified by tid by writing the supplied data
  *               at the supplied offset in the node.
@@ -648,11 +651,11 @@ err_alloc_req:
 int cfsio_update_node(
     struct block_device *bd, 
     cfsio_on_endio_t on_complete, void *endio_cb_data, 
-    u64 tid, u64 nid, u64 offset, u64 len, void *data) {
+    u64 tid, u64 nid, u64 offset, u64 len, void *buffer) {
     return cfsio_data_request(
         bd, AOECMD_UPDATENODE, WRITE, 
         on_complete, endio_cb_data,
-        tid, nid, offset, len, data
+        tid, nid, offset, len, buffer
     );
 }
 
@@ -667,6 +670,7 @@ int cfsio_update_node(
  * @param nid the id of the node to read from
  * @param offset the offset within the node from which to begin reading
  * @param len the number of bytes to read 
+ * @param buffer the buffer to read the data into 
  * @description reads the specified sequence of bytes from the 
  *              node.
  * @todo what about reading past the end, what attempting reads 
@@ -675,15 +679,13 @@ int cfsio_update_node(
 int cfsio_read_node(
     struct block_device *bd, 
     cfsio_on_endio_t on_complete, void *endio_cb_data,
-    u64 tid, u64 nid, u64 offset, u64 len, void *data) {
+    u64 tid, u64 nid, u64 offset, u64 len, void *buffer) {
     return cfsio_data_request(
         bd, AOECMD_READNODE, READ, 
         on_complete, endio_cb_data,
-        tid, nid, offset, len, data
+        tid, nid, offset, len, buffer
     );
 }
-
-
 
 static void __on_data_request_complete_sync(struct cfsio_rq_cb_data *req_data, void *cb_data, int error)
 {
@@ -693,8 +695,13 @@ static void __on_data_request_complete_sync(struct cfsio_rq_cb_data *req_data, v
     struct cfsio_sync_data_request *sync_req = cb_data;
     CLYDE_ASSERT(cb_data != NULL);
 
+    /*Store error code*/
+    sync_req->error = error;
+
     /*pass control to user-supplied callback*/
-    sync_req->on_complete_cb(req_data, sync_req->on_comlete_cb_data, error);
+    if (sync_req->on_complete_cb) {
+        sync_req->on_complete_cb(req_data, sync_req->on_comlete_cb_data, error);
+    }
     
     complete(&sync_req->req_complete); /*request is done, let caller proceed*/
 
@@ -703,12 +710,15 @@ static void __on_data_request_complete_sync(struct cfsio_rq_cb_data *req_data, v
 /** 
  * Perform a synchronous tree data request. 
  * @note wraps 'cfsio_data_request' to become a synchronous call 
- * @return 0 on success, negative on error 
+ * @return 
+ *      0 on success.
+ *      negative on errors issuing the request.
+ *      positive on one or more TERR_* from the request.
  */ 
 static __always_inline int cfsio_data_request_sync(
     struct block_device *bd, enum AOE_CMD cmd, int rw,
     cfsio_on_endio_t on_complete, void *endio_cb_data,
-    u64 tid, u64 nid, u64 offset, u64 len, void *data)
+    u64 tid, u64 nid, u64 offset, u64 len, void *buffer)
 {
     int retval;
     struct cfsio_sync_data_request sync_req;
@@ -723,16 +733,18 @@ static __always_inline int cfsio_data_request_sync(
     retval = cfsio_data_request(
         bd, cmd, rw, 
         __on_data_request_complete_sync, &sync_req, 
-        tid, nid, offset, len, data
+        tid, nid, offset, len, buffer
     );
 
-    if (retval) { /*error, such as -ENOMEM*/
+    if (retval) { 
+        /*error issuing request, such as -ENOMEM*/
         return retval;
     }
 
     wait_for_completion(&sync_req.req_complete);
 
-    return 0; /*success*/
+    /*0 on success, positive on one or more TERR codes*/
+    return sync_req.error; 
 }
 
 
@@ -747,6 +759,7 @@ static __always_inline int cfsio_data_request_sync(
  * @param nid the id of the node to read from
  * @param offset the offset within the node from which to begin reading
  * @param len the number of bytes to read 
+ * @param buffer the buffer to read the data into 
  * @description reads the specified sequence of bytes from the 
  *              node.
  * @todo what about reading past the end, what attempting reads 
@@ -755,12 +768,12 @@ static __always_inline int cfsio_data_request_sync(
 int cfsio_read_node_sync(
     struct block_device *bd, 
     cfsio_on_endio_t on_complete, void *endio_cb_data,
-    u64 tid, u64 nid, u64 offset, u64 len, void *data)
+    u64 tid, u64 nid, u64 offset, u64 len, void *buffer)
 {
     return cfsio_data_request_sync(
         bd, AOECMD_READNODE, READ, 
         on_complete, endio_cb_data, 
-        tid, nid, offset, len, data
+        tid, nid, offset, len, buffer
     );
 }
 
@@ -775,6 +788,7 @@ int cfsio_read_node_sync(
  * @param nid the id of the node to read from
  * @param offset the offset within the node from which to begin reading
  * @param len the number of bytes to read 
+ * @param buffer the buffer to write the data into 
  * @description updates the node identified by nid in the tree
  *               identified by tid by writing the supplied data
  *               at the supplied offset in the node.
@@ -782,12 +796,12 @@ int cfsio_read_node_sync(
 int cfsio_update_node_sync(
     struct block_device *bd, 
     cfsio_on_endio_t on_complete, void *endio_cb_data,
-    u64 tid, u64 nid, u64 offset, u64 len, void *data)
+    u64 tid, u64 nid, u64 offset, u64 len, void *buffer)
 {
     return cfsio_data_request_sync(
         bd, AOECMD_UPDATENODE, WRITE, 
         on_complete, endio_cb_data, 
-        tid, nid, offset, len, data
+        tid, nid, offset, len, buffer
     );
 }
 

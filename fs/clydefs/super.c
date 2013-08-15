@@ -7,6 +7,7 @@
 #include <linux/tree.h>
 
 #include "clydefs.h"
+#include "clydefs_disk.h"
 #include "inode.h"
 #include "io.h"
 
@@ -14,7 +15,7 @@ extern const struct inode_operations clydefs_dir_inode_ops;
 extern struct file_operations clydefs_dir_file_ops;
 
 struct dentry *clydefs_mount(struct file_system_type *fs_type, int flags,
-                             const char *device_name, void *data);
+                             const char *device_path, void *data);
 static int clydefs_fill_super(struct super_block *sb, void *data, int silent);
 
 /*Caches*/
@@ -40,6 +41,8 @@ static match_table_t mnt_tokens = {
 };
 
 struct cfs_mnt_args {
+    /** path to storage device holding the trees */
+    char const *dev_path;
     /** tree holding the superblock table node   */
     u64 tid;
     /** node holding the superblock table  */
@@ -192,6 +195,38 @@ static void __inodecache_destroy(void)
 }
 
 /** 
+ * Get a pointer to the newest of the superblocks 
+ * @param sb_arr a pointer to an array of superblock disk 
+ *               representations.
+ * @pre sb_arr is a pointer to an array of CLYDE_NUM_SB_ENTRIES 
+ *      superblocks
+ * @return a pointer to the newest of the superblocks or an 
+ *         ERR_PTR in case of parsing invalid superblocks
+ */ 
+static __always_inline struct cfs_disk_sb *__get_newest_sb(struct cfs_disk_sb **sb_arr)
+{
+    unsigned int i;
+    unsigned int newest_ndx;
+    u32 newest_gen = 0;
+    CLYDE_ASSERT(sb_arr != NULL);
+    for (i = 0; i < CLYDE_NUM_SB_ENTRIES; i++) {
+        if ( __le32_to_cpu(sb_arr[i]->generation) > newest_gen ) {
+            newest_ndx = i;
+            newest_gen = __le32_to_cpu(sb_arr[i]->generation);
+        }
+    }
+
+    if ( unlikely(newest_ndx == 0 || newest_gen == 0) ) {
+        /*no sb found with newer gen, should NEVER happen 
+          as start-generation should be 1*/
+        CLYDE_ERR("None of the superblocks had a generation number past 0 - aborting mount\n");
+        return ERR_PTR(-EINVAL);
+    } else {
+        return sb_arr[i];
+    }
+}
+
+/** 
  * Initialise the superblock structure 
  * @param sb the superblock structure 
  * @param data -- the parsed mount arguments
@@ -200,37 +235,84 @@ static void __inodecache_destroy(void)
  */ 
 static int clydefs_fill_super(struct super_block *sb, void *data, int silent)
 {
+    /* 
+        FIXME:
+            - set magic identifier in superblock (from what we read in)
+            - fix inode retrieval etc
+     */ 
     struct inode *inode;
     struct dentry *root;
-    struct cfs_sb_info *cfs_sb = NULL;
+    struct cfs_sb *cfs_sb = NULL;
+
+    struct cfs_disk_sb **cfs_disk_sbs = NULL;
+    struct cfs_disk_sb *cfs_disk_sb_newest = NULL;
     struct cfs_mnt_args *mnt_args = data;
-    
+    struct block_device *bd = NULL;
+    fmode_t bd_mode = FMODE_READ|FMODE_WRITE;
+    int retval;
 
-    CLYDE_ASSERT(data != NULL);
+    CLYDE_ASSERT(data != NULL); /*ensure we were supplied with mount arguments (device, tid&nid of sb)*/
 
-    cfs_sb = kzalloc(sizeof(struct cfs_sb_info), GFP_KERNEL);
+    bd = blkdev_get_by_path(mnt_args->dev_path, bd_mode, NULL);
+	if (!bd || IS_ERR(bd)) {
+        CLYDE_ERR("Failed to mount FS, could not open block device '%s': err(%ld)\n", mnt_args->dev_path, PTR_ERR(bd));
+        retval = -ENOENT;
+        goto err;
+	}
+    sb->s_bdev = bd; /*set block device for sb*/
+
+    cfs_sb = kzalloc(sizeof(struct cfs_sb), GFP_KERNEL);
     if (!cfs_sb) {
         CLYDE_ERR("Failed to mount FS, could not allocate extended superblock information\n");
-        return -ENOMEM;
+        retval = -ENOMEM;
+        goto err_alloc_sb;
+    }
+
+    cfs_disk_sbs = kzalloc(sizeof(struct cfs_disk_sb)*CLYDE_NUM_SB_ENTRIES, GFP_KERNEL);
+    if (!cfs_disk_sbs) {
+        CLYDE_ERR("Failed to mount FS, could not allocate memory for reading in persisted superblocks\n");
+        retval = -ENOMEM;
+        goto err_alloc_disk_sb;
+    }
+
+    retval = cfsio_read_node_sync(
+        sb->s_bdev, 
+        NULL, NULL, 
+        mnt_args->tid, mnt_args->nid,
+        0, sizeof(struct cfs_disk_sb)*CLYDE_NUM_SB_ENTRIES, cfs_disk_sbs
+    );
+    if (retval) {
+        CLYDE_ERR("Failed to mount FS, could not read superblock table\n");
+        goto err_read_sb;
+    }
+
+    cfs_disk_sb_newest = __get_newest_sb(cfs_disk_sbs);
+    if ( IS_ERR(cfs_disk_sb_newest) ) {
+        CLYDE_ERR("Failed to mount FS, could not find a superblock with a valid generation number\n");
+        retval = -EINVAL;
+        goto err_read_sb;
     }
 
     cfs_sb->superblock_tbl.tid = mnt_args->tid;
     cfs_sb->superblock_tbl.nid = mnt_args->nid;
 
-    /*Operate with 4096byte blocks*/
-    sb->s_blocksize = PAGE_CACHE_SIZE;
-    sb->s_blocksize_bits = PAGE_CACHE_SHIFT;
+    
 
-    sb->s_magic = CLYDEFS_MAGIC_IDENT;
     sb->s_op = &clydefs_super_operations;
+
+    /*sb->s_magic = CFS_MAGIC_IDENT;        FIXME set magic ident*/
 
     /*c/m/a time stamps work on second-granulatity*/
     sb->s_time_gran = 1000000000;
+    sb->s_blocksize = CFS_BLOCKSIZE;
+    sb->s_blocksize_bits = CFS_BLOCKSIZE_SHIFT;
+
+    /*max filesize, set to maximum supported by VFS*/
+    sb->s_maxbytes = CFS_MAX_FILESIZE;
+    sb->s_max_links = CFS_MAX_LINKS;
 
     /*link superblock to fs-specific superblock info*/
     sb->s_fs_info = cfs_sb;
-
-
 
     inode = new_inode(sb);
     if (!inode)
@@ -247,7 +329,15 @@ static int clydefs_fill_super(struct super_block *sb, void *data, int silent)
         return -ENOMEM;
     
     sb->s_root = root;
-    return 0;
+    return 0; /*success*/
+
+err_read_sb:    
+err_alloc_disk_sb:
+    kfree(cfs_sb);
+err_alloc_sb:
+    blkdev_put(bd, bd_mode);
+err:
+    return retval;
 }
 
 /** 
@@ -255,21 +345,22 @@ static int clydefs_fill_super(struct super_block *sb, void *data, int silent)
  * @param fs_type the file_system_type struct, holding 
  *                references to the mount and umount functions.
  * @param flags supplied mount options 
- * @param device_name the path identifying the backing device 
+ * @param device_path the path identifying the backing device 
  * @param data further mount options to be parsed - expect a 
  *             null-terminated string.
  */ 
 struct dentry *clydefs_mount(struct file_system_type *fs_type, int flags,
-                             const char *device_name, void *data)
+                             char const *device_path, void *data)
 {
     struct cfs_mnt_args mnt_args;
     int retval;
 
+    mnt_args.dev_path = device_path;
     retval = __parse_mnt_args(&mnt_args, data);
     if (retval) {
         return ERR_PTR(retval);
     }
-
+    
     /*FIXME look into preventing double-mounting ?*/
     return mount_nodev(fs_type, flags, &mnt_args, clydefs_fill_super);
 }

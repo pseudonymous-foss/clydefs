@@ -35,10 +35,10 @@ struct cfsio_rq_cb_data {
     struct list_head lst;
     spinlock_t lst_lock;
 
-    /**supplied data pointer, if any*/ 
-    void *data;
+    /**supplied buffer, if any*/ 
+    void *buffer;
     /**length of supplied data buffer */ 
-    u64 data_len;
+    u64 buffer_len;
 };
 
 /** 
@@ -62,12 +62,12 @@ int cfsio_insert_node_sync(struct block_device *bd, u64 *ret_nid, u64 tid);
 
 int cfsio_remove_node_sync(struct block_device *bd, u64 tid, u64 nid);
 
-int cfsio_update_node(struct block_device *bd, cfsio_on_endio_t on_complete, void *endio_cb_data, u64 tid, u64 nid, u64 offset, u64 len, void *data);
+int cfsio_update_node(struct block_device *bd, cfsio_on_endio_t on_complete, void *endio_cb_data, u64 tid, u64 nid, u64 offset, u64 len, void *buf);
 
-int cfsio_read_node(struct block_device *bd, cfsio_on_endio_t on_complete, void *endio_cb_data, u64 tid, u64 nid, u64 offset, u64 len, void *data);
+int cfsio_read_node(struct block_device *bd, cfsio_on_endio_t on_complete, void *endio_cb_data, u64 tid, u64 nid, u64 offset, u64 len, void *buf);
 
-int cfsio_read_node_sync(struct block_device *bd, cfsio_on_endio_t on_complete, void *endio_cb_data, u64 tid, u64 nid, u64 offset, u64 len, void *data);
+int cfsio_read_node_sync(struct block_device *bd, cfsio_on_endio_t on_complete, void *endio_cb_data, u64 tid, u64 nid, u64 offset, u64 len, void *buf);
 
-int cfsio_update_node_sync(struct block_device *bd, cfsio_on_endio_t on_complete, void *endio_cb_data, u64 tid, u64 nid, u64 offset, u64 len, void *data);
+int cfsio_update_node_sync(struct block_device *bd, cfsio_on_endio_t on_complete, void *endio_cb_data, u64 tid, u64 nid, u64 offset, u64 len, void *buf);
 
 #endif //__CLYDEFS_IO_H
