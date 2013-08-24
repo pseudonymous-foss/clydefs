@@ -3,6 +3,13 @@
 #include <linux/init.h>
 #include "super.h"
 #include "io.h"
+#include "inode.h"
+#include "sysfs.h"
+
+/* 
+    FIXME:
+        - remove the random 
+*/ 
 
 short dodebug = 0; /*module param*/
 char *dbg_dev = NULL;
@@ -18,24 +25,52 @@ void tests_init(void)
 
 static int __init clydefs_init(void)
 {
+    int retval;
 
     if (unlikely(dodebug)) {
         tests_init();
         return 0;
     }
-    
-    return -1;
 
     /*not testing*/
-    if ( cfsio_init() ){
-        return -1;
-    }
-    return super_init();
+
+    /*init io module*/
+    retval = cfsio_init();
+    if (retval)
+        goto err;
+
+    /*init inode module*/
+    retval = cfsi_init();
+    if (retval)
+        goto err_inode_init;
+
+    /*init filesystem proper*/
+    retval = super_init();
+    if (retval)
+        goto err_super_init;
+
+    /*init sysfs*/
+    retval = cfssys_init();
+    if (retval)
+        goto err_cfssys_init;
+
+    return 0; /*succes*/
+
+err_cfssys_init:
+    super_exit();
+err_super_init:
+    cfsi_exit();
+err_inode_init:
+    cfsio_exit();
+err:
+    return retval;
 }
 
 static void __exit clydefs_exit(void)
 {
+    cfssys_exit();
     super_exit();
+    cfsi_exit();
     cfsio_exit();
 }
 

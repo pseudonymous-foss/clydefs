@@ -93,7 +93,7 @@ static struct bio_set *bio_pool = NULL;
   several bio's do not send data apart from the tree 
   interface values, they will use this bogus buffer.
 */
-static u8 _nilbuf_data = 255;
+static u8 *_nilbuf_data = NULL;
 struct bio_page_data nilbuf;
 
 static void __free_tbio_fragments(struct cfsio_rq *rq);
@@ -107,7 +107,7 @@ static void __free_tbio_fragments(struct cfsio_rq *rq);
 static void __cfsio_rq_init(struct cfsio_rq *rq)
 {
     INIT_LIST_HEAD(&rq->cb_data.lst);
-    spin_lock_init(&rq->cb_data.lst_lock);
+    spin_lock_init(&(rq->cb_data.lst_lock));
 }
 
 /** 
@@ -300,8 +300,7 @@ static int __submit_bio_sync(struct bio *bio, int rw)
     printk("%s called...\n", __FUNCTION__);
     rw |= REQ_SYNC;
 	/*initialise queue*/
-    ret.event.done = 0;
-    init_waitqueue_head(&ret.event.wait);
+    init_completion(&ret.event);
 
     printk("configuring bio...\n");
 	bio->bi_private = &ret;
@@ -317,6 +316,8 @@ static int __submit_bio_sync(struct bio *bio, int rw)
  * create a new tree on backing device.
  * @description creates a new tree on the backing device and
  *              returns the resulting id.
+ * @return 0 on success, -ENOMEM on allocation-related errors, 
+ *         positive values on TREE-CMD related errors.
  */
 int cfsio_create_tree_sync(struct block_device *bd, u64 *ret_tid) {
     struct bio *b = NULL;
@@ -411,12 +412,14 @@ err_alloc_bio:
  * @description creates a new node initially populated with
  *              'data' in the tree identified by tid.
  * @param ret_nid where to store the assigned node id 
- * @param tid the tree id
+ * @param tid the tree id 
+ * @param prealloc_len if not 0, specifies how many bytes to 
+ *                     preallocate for the node.
  * @return 0 on success, negative on errors
  * @post on success, *ret_nid will hold the assigned node 
  *       identifier.
  */
-int cfsio_insert_node_sync(struct block_device *bd, u64 *ret_nid, u64 tid) {
+int cfsio_insert_node_sync(struct block_device *bd, u64 *ret_nid, u64 tid, u64 prealloc_len) {
     struct bio *b = NULL;
     struct tree_iface_data *td = NULL;
     int retval;
@@ -431,6 +434,7 @@ int cfsio_insert_node_sync(struct block_device *bd, u64 *ret_nid, u64 tid) {
 
     td->cmd = AOECMD_INSERTNODE;
     td->tid = tid;
+    td->len = prealloc_len;
 
     b->bi_bdev = bd;
     if (bio_add_page(b,nilbuf.page_addr,nilbuf.bcnt,nilbuf.vec_off) < nilbuf.bcnt) {
@@ -513,7 +517,7 @@ static int cfsio_data_request(struct block_device *bd, enum AOE_CMD cmd, int rw,
       * should bio allocation fail halfway in I'm in trouble.
       * investigate the BLOCK_SIZE / PAGE_SIZE issue (read comments @ top)
     */
-    int retval;
+    int retval = 0;
     struct bio *b;
     struct cfsio_rq *req = NULL;
     u64 chunk_pages;
@@ -536,7 +540,7 @@ static int cfsio_data_request(struct block_device *bd, enum AOE_CMD cmd, int rw,
 
     req = kmem_cache_zalloc(cfsio_rq_pool, GFP_KERNEL);
     if (!req) {
-        pr_err("Failed to allocate request structure\n");
+        printk("\t\tfailed to allocate request structure\n");
         retval = -ENOMEM;
         goto err_alloc_req;
     }
@@ -552,7 +556,7 @@ next_chunk:
 
     b = __alloc_bio(TREE_BIO, chunk_pages);
     if (!b) {
-        pr_warn("failed to allocate tree bio\n");
+        printk("\t\tfailed to allocate tree bio\n");
         retval = -ENOMEM;
         goto err_alloc_bio; /*FIXME that will not work here, we don't know how many bio's we'll issue*/
     }
@@ -720,7 +724,7 @@ static __always_inline int cfsio_data_request_sync(
     cfsio_on_endio_t on_complete, void *endio_cb_data,
     u64 tid, u64 nid, u64 offset, u64 len, void *buffer)
 {
-    int retval;
+    int retval = 0;
     struct cfsio_sync_data_request sync_req;
 
     /*initialise structure which will be used to invoke the user-supplied 
@@ -728,7 +732,7 @@ static __always_inline int cfsio_data_request_sync(
       completion used to make the function synchronous.*/
     sync_req.on_complete_cb = on_complete;
     sync_req.on_comlete_cb_data = endio_cb_data;
-    INIT_COMPLETION(sync_req.req_complete);
+    init_completion(&sync_req.req_complete);
 
     retval = cfsio_data_request(
         bd, cmd, rw, 
@@ -738,6 +742,7 @@ static __always_inline int cfsio_data_request_sync(
 
     if (retval) { 
         /*error issuing request, such as -ENOMEM*/
+        pr_err("%s req failed! (retval: %d)\n", __FUNCTION__, retval);
         return retval;
     }
 
@@ -829,15 +834,24 @@ int cfsio_init(void) {
         pr_err("Failed to allocate request pool (cfsio_rq_pool)\n");
         goto err_alloc_rqpool;
     }
+
+    _nilbuf_data = kzalloc(sizeof(u8), GFP_KERNEL);
+    if (!_nilbuf_data) {
+        pr_err("failed to allocate nilbuf used for commands requiring no additional data\n");
+        goto err_alloc_nilbuf;
+    }
     
     /*bogus values for bio's which send no additional data than 
       the tree command values themselves.*/
-    nilbuf.page_addr = virt_to_page(&_nilbuf_data);
+    nilbuf.page_addr = virt_to_page(_nilbuf_data);
     nilbuf.bcnt = sizeof(_nilbuf_data);
-    nilbuf.vec_off = offset_in_page(&_nilbuf_data);
+    nilbuf.vec_off = offset_in_page(_nilbuf_data);
 
     pr_debug("cfsio_init successful...\n");
-    return 0;
+    return 0; /*success*/
+
+err_alloc_nilbuf:
+    kmem_cache_destroy(cfsio_rq_pool);
 err_alloc_rqpool:
     kmem_cache_destroy(cfsio_rqfrag_pool);
 err_alloc_rqfragpool:
@@ -852,6 +866,8 @@ err_alloc_biopool:
  *              preparation for shutdown.
  */
 void cfsio_exit(void) {
+    if (_nilbuf_data)
+        kfree(_nilbuf_data);
     if (cfsio_rqfrag_pool)
         kmem_cache_destroy(cfsio_rqfrag_pool);
     if (cfsio_rq_pool)

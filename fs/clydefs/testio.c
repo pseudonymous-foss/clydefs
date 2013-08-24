@@ -52,7 +52,7 @@ static __always_inline void mktree(int *retval, u64 *tid)
 
 static __always_inline void mknode(int *retval, u64 tid, u64 *nid)
 {
-    *retval = cfsio_insert_node_sync(dbg_dev_bd, nid, tid);
+    *retval = cfsio_insert_node_sync(dbg_dev_bd, nid, tid, 0);
     TEST_ASSERT_TRUE(*retval == 0, "mknode: did not expect an error inserting a node into tree (%llu), error: %d\n", tid, *retval);
     TEST_ASSERT_TRUE(*nid != U64_MAX_VALUE, "nid wasn't set as a result of inserting a new node\n");
 }
@@ -165,7 +165,7 @@ static void test_tree_insert(void)
     TST_HDR;
 
     mktree(&retval,&tid);
-    retval = cfsio_insert_node_sync(dbg_dev_bd, &nid, tid);
+    retval = cfsio_insert_node_sync(dbg_dev_bd, &nid, tid, 0);
     TEST_ASSERT_TRUE(retval == 0, "did not expect an error inserting a node into tree (%llu), error: %d\n", tid, retval);
     TEST_ASSERT_TRUE(nid != U64_MAX_VALUE, "nid wasn't set as a result of inserting a new node\n");
 }
@@ -177,7 +177,7 @@ static void test_tree_insert_into_nonexisting_tree(void)
     u64 nid = U64_MAX_VALUE;
 
     TST_HDR;
-    retval = cfsio_insert_node_sync(dbg_dev_bd, &nid, TID_LEGAL_BOGUS_VAL);
+    retval = cfsio_insert_node_sync(dbg_dev_bd, &nid, TID_LEGAL_BOGUS_VAL, 0);
     TEST_ASSERT_TRUE(
         retval == TERR_NO_SUCH_TREE, 
         "expected TERR_NO_SUCH_TREE(%d) from inserting a node into a non-existing tree, got: %d\n",

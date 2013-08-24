@@ -1,7 +1,7 @@
 #include "file.h"
 
-const struct file_operations clydefs_file_ops;
-const struct file_operations clydefs_dir_file_ops;
+const struct file_operations cfs_file_ops;
+const struct file_operations cfs_dir_file_ops;
 
 int clydefs_file_open(struct inode *inode, struct file *file)
 {
@@ -20,13 +20,13 @@ ssize_t clydefs_file_write(struct file *file, const char __user *buf,
     return 0;
 }
 
-const struct file_operations clydefs_file_ops = {
+const struct file_operations cfs_file_ops = {
     .open = clydefs_file_open,
     .read = clydefs_file_read,
     .write = clydefs_file_write,
 };
 
-const struct file_operations clydefs_dir_file_ops = {
+const struct file_operations cfs_dir_file_ops = {
     .open		= dcache_dir_open,
 	.release	= dcache_dir_close,
 	.llseek		= dcache_dir_lseek,
