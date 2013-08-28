@@ -91,7 +91,6 @@ static __always_inline int cfs_mk_sb_tbl(
     struct cfsd_sb *sb_arr = NULL;
     int i;
     struct cfsd_sb *sb_curr = NULL;
-    struct cfsd_sb *tst_arr = NULL;
 
     printk("%s called\n", __FUNCTION__);
     CLYDE_ASSERT(ret_sb_tbl_nid != NULL);
@@ -114,15 +113,8 @@ static __always_inline int cfs_mk_sb_tbl(
 
     sb_curr = sb_arr;
     for (i=0; i<CLYDE_NUM_SB_ENTRIES; i++,sb_curr++) {
-        struct cfs_sb t;
-        struct cfsd_sb t2;
         __copy2d_sb(sb_curr, tmp_sb);
         __print_disk_sb(sb_curr);
-        __copy2c_sb(&t, sb_curr);
-        __copy2d_sb(&t2, &t);
-        CLYDE_DBG("--- converted to cpu then back to disk, then printed (must be the same!)\n");
-        __print_disk_sb(&t2);
-        printk("---------------------\n");
     }
 
     retval = cfsio_update_node_sync(
@@ -138,16 +130,6 @@ static __always_inline int cfs_mk_sb_tbl(
         );
         goto err_write_sb_tbl;
     }
-
-    CLYDE_DBG("TEST -- remove this\n");
-    tst_arr = kzalloc(sizeof(struct cfsd_sb)*CLYDE_NUM_SB_ENTRIES, GFP_KERNEL);
-    if (!tst_arr) {
-        CLYDE_DBG("shit went south\n");
-    }
-    cfsio_read_node_sync(bd,NULL,NULL,fs_tree_tid,*ret_sb_tbl_nid,0,sizeof(struct cfsd_sb)*CLYDE_NUM_SB_ENTRIES, tst_arr);
-    CLYDE_DBG("THIS IS WHAT I READ BACK: (tid: %llu, nid: %llu)", fs_tree_tid, *ret_sb_tbl_nid);
-    __print_disk_sb(&tst_arr[0]);
-    __print_disk_sb(&tst_arr[1]);
 
     kfree(sb_arr);
     return 0; /*success*/
@@ -182,6 +164,7 @@ err_mk_sb_tbl:
  */ 
 static __always_inline int cfs_mk_fs_itbl(u64 *ret_fs_itbl_nid, struct block_device *bd, u64 inode_tree_tid)
 {
+    struct cfsd_inode_chunk *chunk = NULL;
     struct cfsd_ientry *root_entry = NULL;
     u64 root_itbl_nid, fs_itbl_nid;
     int retval;
@@ -192,13 +175,13 @@ static __always_inline int cfs_mk_fs_itbl(u64 *ret_fs_itbl_nid, struct block_dev
     CLYDE_ASSERT(inode_tree_tid != 0);
     
 
-    root_entry = kzalloc(sizeof(struct cfsd_ientry), GFP_KERNEL);
-    if (!root_entry) {
+    chunk = kzalloc(sizeof(struct cfsd_inode_chunk), GFP_KERNEL);
+    if (!chunk) {
         retval = -ENOMEM;
-        goto err_alloc_root_ientry;
+        goto err_alloc_chunk;
     }
 
-    /*create fs- and root inode table nodes*/
+    /*create and write the empty root inode table chunk*/
     retval = cfsio_insert_node_sync(
         bd, &root_itbl_nid, inode_tree_tid, sizeof(struct cfsd_inode_chunk)
     );
@@ -206,6 +189,20 @@ static __always_inline int cfs_mk_fs_itbl(u64 *ret_fs_itbl_nid, struct block_dev
         CLYDE_ERR("Failed to create node for root's inode table in inode tree (tid:%llu)\n", inode_tree_tid);
         goto err_mk_root_itbl;
     }
+    chunk->last_chunk = 1;
+    retval = cfsio_update_node_sync(
+        bd, NULL, NULL, inode_tree_tid, root_itbl_nid, 
+        CHUNK_LEAD_SLACK_BYTES, sizeof(struct cfsd_inode_chunk), chunk
+    );
+    if (retval) {
+        CLYDE_ERR("Failed to write contents of root's inode table in inode tree (tid:%llu,nid:%llu)\n", inode_tree_tid, root_itbl_nid);
+        goto err_mk_root_itbl_write;
+    }
+
+    /*Adjust chunk buffer - and begin creating the FS inode table with the root entry.*/
+    root_entry = &chunk->entries[0];
+    chunk->entries_used = 1;
+    chunk->last_chunk = 1;
     retval = cfsio_insert_node_sync(
         bd, &fs_itbl_nid, inode_tree_tid, sizeof(struct cfsd_inode_chunk)
     );
@@ -231,19 +228,19 @@ static __always_inline int cfs_mk_fs_itbl(u64 *ret_fs_itbl_nid, struct block_dev
     retval = cfsio_update_node_sync(
         bd, NULL, NULL, 
         inode_tree_tid, fs_itbl_nid, 
-        0, sizeof(struct cfsd_ientry), root_entry
+        CHUNK_LEAD_SLACK_BYTES, sizeof(struct cfsd_inode_chunk), chunk
     );
     smp_mb();
     if (retval) {
         CLYDE_ERR("Failed to write contents to fs inode table (tid:%llu, nid:%llu) (retval:%d)\n", inode_tree_tid, fs_itbl_nid, retval);
-        goto err_write_fs_itbl;
+        goto err_mk_fs_itbl_write;
     }
 
     *ret_fs_itbl_nid = fs_itbl_nid; /*return nid of the fs inode table*/
     kfree(root_entry);
     return 0; /*success*/
 
-err_write_fs_itbl:
+err_mk_fs_itbl_write:
     if (cfsio_remove_node_sync(bd, inode_tree_tid, fs_itbl_nid)) {
         CLYDE_ERR(
             "%s - failure to unwind changes, could not remove created fs inode table node (tid:%llu,nid:%llu)\n", 
@@ -251,6 +248,7 @@ err_write_fs_itbl:
         );
     }
 err_mk_fs_itbl:
+err_mk_root_itbl_write:
     if (cfsio_remove_node_sync(bd, inode_tree_tid, root_itbl_nid)) {
         CLYDE_ERR(
             "%s - failure to unwind changes, could not remove created root inode table node (tid:%llu,nid:%llu)\n", 
@@ -258,8 +256,8 @@ err_mk_fs_itbl:
         );
     }
 err_mk_root_itbl:
-    kfree(root_entry);
-err_alloc_root_ientry:
+    kfree(chunk);
+err_alloc_chunk:
     *ret_fs_itbl_nid = 0;
     return retval;
 }
@@ -281,6 +279,7 @@ int cfsfs_create(struct cfs_node_addr *ret_fs_sb_tbl, char const * const dev_pat
     u64 inode_tree_tid;
     u64 fs_tree_tid;     
     u64 fs_itbl_nid = 0;                /*filesystem inode table nid*/
+    u64 ino_tbl_nid = 0;                /*node for storing reclaimed INO's from deleted inodes*/
     struct cfs_sb tmp_sb;               /*initial superblock settings*/
     u64 sb_tbl_nid = 0;                 /*nid of created superblock table in fs tree*/
     int retval;
@@ -295,12 +294,23 @@ int cfsfs_create(struct cfs_node_addr *ret_fs_sb_tbl, char const * const dev_pat
         CLYDE_ERR("%s - failed make file system trees\n", __FUNCTION__);
         goto err_mk_trees;
     }
+    CLYDE_ASSERT(file_tree_tid != 0);
+    CLYDE_ASSERT(inode_tree_tid != 0);
+    CLYDE_ASSERT(fs_tree_tid != 0);
 
     retval = cfs_mk_fs_itbl(&fs_itbl_nid, bd, inode_tree_tid);
     if (retval) {
         CLYDE_ERR("%s - failed inode tables for fs and root dir\n", __FUNCTION__);
         goto err_mk_itbls;
     }
+    CLYDE_ASSERT(fs_itbl_nid != 0);
+
+    retval = cfsio_insert_node_sync(bd,&ino_tbl_nid, fs_tree_tid, 1024*1024);
+    if (retval) {
+        CLYDE_ERR("%s - failed to create inode reclamation tbl\n", __FUNCTION__);
+        goto err_mk_ino_tbl;
+    }
+    CLYDE_ASSERT(ino_tbl_nid != 0);
 
     /*Populate the superblock tbl with settings*/
     tmp_sb.file_tree_tid = file_tree_tid;
@@ -308,6 +318,12 @@ int cfsfs_create(struct cfs_node_addr *ret_fs_sb_tbl, char const * const dev_pat
     tmp_sb.fs_inode_tbl.nid = fs_itbl_nid;
     tmp_sb.generation = 1;
     tmp_sb.magic_ident = CFS_MAGIC_IDENT;
+
+    tmp_sb.fs_ino_tbl.tid = fs_tree_tid;
+    tmp_sb.fs_ino_tbl.nid = ino_tbl_nid;
+    tmp_sb.ino_nxt_free = CFS_INO_MIN;
+    tmp_sb.ino_tbl_start = tmp_sb.ino_tbl_end = 0; /*empty*/
+    
 
     retval = cfs_mk_sb_tbl(&sb_tbl_nid, bd, fs_tree_tid, &tmp_sb);
     if (retval) {
@@ -323,6 +339,12 @@ int cfsfs_create(struct cfs_node_addr *ret_fs_sb_tbl, char const * const dev_pat
     goto success;
 
 err_mk_sb_tbl: /*only nodes are created by cfs_mk_trees -- we expect deleting the trees to handle this*/
+    if (cfsio_remove_node_sync(bd, fs_tree_tid, ino_tbl_nid))
+        CLYDE_ERR(
+            "WARN- fs creation failed, and failed to remove inode reclamation table node while recovering (tid:%llu,nid:%llu)\n",
+            fs_tree_tid, ino_tbl_nid
+        );
+err_mk_ino_tbl:
 err_mk_itbls:
     if (cfsio_remove_tree_sync(bd, file_tree_tid))
         CLYDE_ERR("WARN - fs creation failed, and failed to remove file_tree(tid:%llu) while recovering\n", file_tree_tid);

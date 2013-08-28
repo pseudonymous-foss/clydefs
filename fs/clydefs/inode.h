@@ -10,7 +10,7 @@
  * @param i the inode reference 
  * @return the clydefs-specific parent structure containing the inode 
  */
-static __always_inline struct cfs_inode *CFS_INODE(struct inode *i)
+static __always_inline struct cfs_inode *CFS_INODE(struct inode const * const i)
 {
     return container_of(i, struct cfs_inode, vfs_inode);
 }

@@ -115,7 +115,7 @@ static int __parse_mnt_args(struct cfs_mnt_args *ret_args, char *mnt_arg_string)
  * @param sb the file system superblock 
  * @note this function is called by iget_locked 
  */ 
-static struct inode *cfssup_alloc_inode(struct super_block *sb)
+static struct inode *cfs_alloc_inode(struct super_block *sb)
 {
     /*we actually allocate a larger structure than just an inode 
       which we can later get a hold of via container_of */
@@ -148,7 +148,7 @@ static void cfssup_cb_free_inode(struct rcu_head *head)
  * @note cfssup_cb_free_inode will be called once no more 
  *       readers reference the inode.
  */ 
-static void cfssup_destroy_inode(struct inode *inode)
+static void cfs_destroy_inode(struct inode *inode)
 {
 	call_rcu(&inode->i_rcu, cfssup_cb_free_inode);
 }
@@ -259,7 +259,7 @@ static int cfs_get_sb_ndx(struct cfsd_sb *sb_arr, enum SB_ENTRY entry)
  * @param wait 0=>synchronous, 1=>synchronous
  * @return 0 on success, otherwise an error
  */ 
-int cfssup_sync_fs(struct super_block *sb, int wait)
+static int cfs_sync_fs(struct super_block *sb, int wait)
 {
     struct cfsd_sb *cfsd_arr = NULL;        /*buffer to hold sequence of cfsd_sb entries*/
     struct cfs_node_addr *super_tbl = NULL; /*hold address of superblock table node*/
@@ -269,6 +269,7 @@ int cfssup_sync_fs(struct super_block *sb, int wait)
     u64 oldest_sb_offset;                   /*offset of oldest sb entry in supertable node(& buffer)*/
     int retval;
 
+    CLYDE_DBG("called\n");
     cfsd_arr = kzalloc(sizeof(struct cfsd_sb)*CLYDE_NUM_SB_ENTRIES, GFP_KERNEL);
     if (!cfsd_arr) {
         CLYDE_ERR("%s - could not allocate memory for reading in persisted superblocks\n", __FUNCTION__);
@@ -334,7 +335,10 @@ err_alloc:
  */ 
 static void cfs_put_super(struct super_block *sb)
 {
+    struct cfs_sb *cfs_sb = NULL;
     printk("clydefs: unmounting fs...\n");
+    cfs_sb = CFS_SB(sb);
+    kfree(cfs_sb->ino_buf);
     kfree(sb->s_fs_info); /*free fs-specific superblock info*/
     sb->s_fs_info = NULL;
 }
@@ -346,7 +350,13 @@ void __print_disk_sb(struct cfsd_sb *dsb)
     printk("\tfs_inode_tbl.tid : raw(%llx) cpu(%llx)\n", dsb->fs_inode_tbl.tid, le64_to_cpu(dsb->fs_inode_tbl.tid));
     printk("\tfs_inode_tbl.nid : raw(%llx) cpu(%llx)\n", dsb->fs_inode_tbl.nid, le64_to_cpu(dsb->fs_inode_tbl.nid));
     printk("\tgeneration : raw(%x) cpu(%x)\n", dsb->generation, le32_to_cpu(dsb->generation));
-    printk("\tgeneration : raw(%x) cpu(%x)\n", dsb->magic_ident, le32_to_cpu(dsb->magic_ident));
+    printk("\tmagic : raw(%x) cpu(%x)\n", dsb->magic_ident, le32_to_cpu(dsb->magic_ident));
+
+    printk("\tfs_ino_tbl.tid : raw(%llx) cpu(%llx)\n", dsb->fs_ino_tbl.tid, le64_to_cpu(dsb->fs_ino_tbl.tid));
+    printk("\tfs_ino_tbl.nid : raw(%llx) cpu(%llx)\n", dsb->fs_ino_tbl.nid, le64_to_cpu(dsb->fs_ino_tbl.nid));
+    printk("\tino_nxt_free : raw(%llx) cpu(%llx)\n", dsb->ino_nxt_free, le64_to_cpu(dsb->ino_nxt_free));
+    printk("\tino_tbl_start : raw(%llx) cpu(%llx)\n", dsb->ino_tbl_start, le64_to_cpu(dsb->ino_tbl_start));
+    printk("\tino_tbl_end : raw(%llx) cpu(%llx)\n", dsb->ino_tbl_end, le64_to_cpu(dsb->ino_tbl_end));
 }
 
 /** 
@@ -371,6 +381,7 @@ static int cfs_fill_super(struct super_block *sb, void *data, int silent)
     struct cfs_mnt_args *mnt_args = data;
     struct block_device *bd = NULL;
     fmode_t bd_mode = FMODE_READ|FMODE_WRITE;
+    u64 *ino_buf = NULL;
     int retval;
 
     CLYDE_ASSERT(data != NULL); /*ensure we were supplied with mount arguments (device, tid&nid of sb)*/
@@ -398,6 +409,13 @@ static int cfs_fill_super(struct super_block *sb, void *data, int silent)
         goto err_alloc_disk_sb;
     }
 
+    ino_buf = kzalloc(sizeof(u64), GFP_KERNEL);
+    if (!ino_buf) {
+        CLYDE_ERR("Failed to mount fs, could not allocate ino tbl buffer\n");
+        retval = -ENOMEM;
+        goto err_alloc_ino_buf;
+    }
+
     retval = cfsio_read_node_sync(
         sb->s_bdev, 
         NULL, NULL, 
@@ -423,6 +441,7 @@ static int cfs_fill_super(struct super_block *sb, void *data, int silent)
 
     cfs_sb->superblock_tbl.tid = mnt_args->tid;
     cfs_sb->superblock_tbl.nid = mnt_args->nid;
+    cfs_sb->ino_buf = ino_buf;
 
     sb->s_op = &cfs_super_operations;
 
@@ -436,7 +455,9 @@ static int cfs_fill_super(struct super_block *sb, void *data, int silent)
     }
     sb->s_magic = CFS_MAGIC_IDENT;
     __copy2c_sb(cfs_sb, cfs_disk_sb_newest);
-    CLYDE_DBG("wrote persisted superblock values to superblock\n");
+
+    /*initialise sb locks*/
+    spin_lock_init(&(cfs_sb->lock_fs_ino_tbl));
 
     /*c/m/a time stamps work on second-granulatity*/
     sb->s_time_gran = 1000000000;
@@ -472,32 +493,17 @@ static int cfs_fill_super(struct super_block *sb, void *data, int silent)
 	}
 
     /*FIXME -- add bdi info for writeback support if wanted*/
-    /*FIXME -- cleanup -- free all the temporary structures */
-
-#if 0
-    inode = new_inode(sb);
-    if (!inode)
-        return -ENOMEM;
-
-    inode->i_ino = 1; /*Ensure inode number '1' is reserved!*/
-    inode->i_mode = S_IFDIR | 755;
-    inode->i_atime = inode->i_mtime = inode->i_ctime = CURRENT_TIME; /*TODO */
-    inode->i_op = &cfs_dir_inode_ops;
-    inode->i_fop = &cfs_dir_file_ops;
-    set_nlink(inode, 2);
-    root = d_make_root(inode);
-    if (!root)
-        return -ENOMEM;
-    
-    sb->s_root = root;
-#endif
+    kfree(cfsd_sb_arr);
     return 0; /*success*/
 
 err_root_dirmode:
 err_root_dentry:
     iput(root);
 err_read_root_inode:
-err_read_sb:    
+err_read_sb:
+    kfree(ino_buf);
+err_alloc_ino_buf:
+    kfree(cfsd_sb_arr);
 err_alloc_disk_sb:
     kfree(cfs_sb);
 err_alloc_sb:
@@ -578,10 +584,10 @@ static struct file_system_type clydefs_fs_type = {
 };
 
 static const struct super_operations cfs_super_operations = {
-    .alloc_inode = cfssup_alloc_inode,
-    .destroy_inode = cfssup_destroy_inode,
+    .alloc_inode = cfs_alloc_inode,
+    .destroy_inode = cfs_destroy_inode,
     .statfs = simple_statfs,
     .put_super = cfs_put_super,
-    .sync_fs = cfssup_sync_fs,
+    .sync_fs = cfs_sync_fs,
 };
 

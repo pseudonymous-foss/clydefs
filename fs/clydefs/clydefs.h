@@ -2,6 +2,7 @@
 #define __CLYDEFS_GLOBAL_H
 
 #include <linux/fs.h>
+#include <linux/spinlock.h>
 
 /*FIXME there must be a better way*/
 #define U64_MAX_VALUE 18446744073709551615ULL
@@ -20,7 +21,9 @@
 #define CFS_BLOCKSIZE_SHIFT     PAGE_CACHE_SHIFT
 
 /*wrap errors*/
-#define CLYDE_ERR(fmt, a...) printk(KERN_ERR "clydefs: " fmt, ##a)
+#define CLYDE_ERR(fmt, a...) printk(KERN_ERR "cfs<ERR, %s, %d>: " fmt, __FUNCTION__, __LINE__, ##a)
+
+#define CFS_WARN(fmt, a...) printk(KERN_WARNING "cfs<WARN>: " fmt, ##a)
 
 #define CLYDE_STUB printk(KERN_ERR "clydefs: %s<%d> is a STUB\n", __FUNCTION__, __LINE__)
 
@@ -34,6 +37,16 @@
 
 /**Number of bytes reserved for filename length*/ 
 #define CFS_NAME_LEN 256
+
+/**Number of reclaimable INO entries in the INO tbl (1mb, 
+ * 8b/entry) */ 
+#define RECLAIM_INO_MAX 131072ULL
+
+#define CHUNK_NUMENTRIES 102U
+#define CHUNK_LEAD_SLACK_BYTES 126
+#define CHUNK_BASE_ENTRY_OFF_BYTES 128
+#define CHUNK_MAX_UNSORTED 10
+
 
 struct cfs_node_addr {
     u64 tid;
@@ -55,7 +68,23 @@ struct cfs_sb {
     /**ID of file tree */ 
     u64 file_tree_tid;
 
+    /**INO reclamation table, for reusing inodes, can store XXX 
+     * reclaimed id's before we leak. */
+    struct cfs_node_addr fs_ino_tbl;
+
+    /**Next free INO to give, only use iff ino_tbl_entries == 0 */ 
+    u64 ino_nxt_free;
+    /***Start offset into ino tbl containing reclaimable ino's */
+    u64 ino_tbl_start;
+    /**End offset of area containing reclaimable ino's*/
+    u64 ino_tbl_end;
+    /**Buffer used for ino transfers */ 
+    u64 *ino_buf;
+
     /*transient values*/
+    spinlock_t lock_fs_ino_tbl;
+    
+
     /**Location of the superblock table */ 
     struct cfs_node_addr superblock_tbl;
 };
