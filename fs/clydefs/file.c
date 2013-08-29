@@ -21,16 +21,20 @@ ssize_t clydefs_file_write(struct file *file, const char __user *buf,
 }
 
 const struct file_operations cfs_file_ops = {
+    /* 
     .open = clydefs_file_open,
     .read = clydefs_file_read,
-    .write = clydefs_file_write,
+    .write = clydefs_file_write, 
+    */
 };
 
 const struct file_operations cfs_dir_file_ops = {
+    /*
     .open		= dcache_dir_open,
 	.release	= dcache_dir_close,
 	.llseek		= dcache_dir_lseek,
 	.read		= generic_read_dir,
 	.readdir	= dcache_readdir,
 	.fsync		= noop_fsync,
+    */
 };

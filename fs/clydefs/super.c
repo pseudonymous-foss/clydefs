@@ -11,8 +11,7 @@
 #include "inode.h"
 #include "io.h"
 
-extern const struct inode_operations cfs_dir_inode_ops;
-extern struct file_operations cfs_dir_file_ops;
+
 
 static struct dentry *cfs_mount(struct file_system_type *fs_type, int flags,
                              const char *device_path, void *data);
@@ -121,7 +120,7 @@ static struct inode *cfs_alloc_inode(struct super_block *sb)
       which we can later get a hold of via container_of */
     struct cfs_inode *inode;
 
-	inode = kmem_cache_alloc(cfssup_inode_pool, GFP_KERNEL);
+	inode = kmem_cache_zalloc(cfssup_inode_pool, GFP_KERNEL);
 	if (!inode) {
 		return NULL;
     }
@@ -458,6 +457,7 @@ static int cfs_fill_super(struct super_block *sb, void *data, int silent)
 
     /*initialise sb locks*/
     spin_lock_init(&(cfs_sb->lock_fs_ino_tbl));
+    spin_lock_init(&(cfs_sb->lock_generation));
 
     /*c/m/a time stamps work on second-granulatity*/
     sb->s_time_gran = 1000000000;

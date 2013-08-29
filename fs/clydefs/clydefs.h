@@ -61,7 +61,7 @@ struct cfs_sb {
     /*Persisted values*/
     /**FS magic identifier, as read from the persisted superblock */ 
     u32 magic_ident;
-    /**Generation value of superblock */ 
+    /**Generation value of superblock*/ 
     u32 generation;
     /**inode parent table for '/' (and JUST '/')   */
     struct cfs_node_addr fs_inode_tbl;
@@ -82,9 +82,11 @@ struct cfs_sb {
     u64 *ino_buf;
 
     /*transient values*/
+    /**protect 'ino_*' fields */ 
     spinlock_t lock_fs_ino_tbl;
+    /**protect 'generation' field */ 
+    spinlock_t lock_generation;
     
-
     /**Location of the superblock table */ 
     struct cfs_node_addr superblock_tbl;
 };
@@ -102,7 +104,20 @@ struct cfs_inode {
     struct cfs_node_addr inode_tbl;
 };
 
+
+
 /*========= INLINE FUNCTIONS */
+
+/** 
+ *  Return the tid of the inode tree
+ *  @param csb the cfs-specific superblock information.
+ *  @return tid of the inode tree
+ */ 
+static __always_inline u64 CFS_INODE_TID(struct cfs_sb *csb)
+{
+    return csb->fs_inode_tbl.tid;
+}
+
 /** 
  *  Return the cfs-specific superblock info.
  *  @param sb the FS superblock

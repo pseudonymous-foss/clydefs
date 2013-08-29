@@ -220,7 +220,7 @@ static __always_inline int cfs_mk_fs_itbl(u64 *ret_fs_itbl_nid, struct block_dev
     root_entry->inode_tbl.nid = cpu_to_le64(root_itbl_nid);
     strcpy(root_entry->name, "/");
     root_entry->nlen = strlen(root_entry->name);
-    root_entry->mode = cpu_to_le16(S_IFDIR | 755);
+    root_entry->mode = cpu_to_le16(S_IFDIR | 0755);
     /*all inodes start with just one chunk*/
     root_entry->size_bytes = cpu_to_le64(sizeof(struct cfsd_inode_chunk));
 
