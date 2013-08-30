@@ -173,7 +173,6 @@ static __always_inline int cfs_mk_fs_itbl(u64 *ret_fs_itbl_nid, struct block_dev
     CLYDE_ASSERT(ret_fs_itbl_nid != NULL);
     CLYDE_ASSERT(*ret_fs_itbl_nid == 0);
     CLYDE_ASSERT(inode_tree_tid != 0);
-    
 
     chunk = kzalloc(sizeof(struct cfsd_inode_chunk), GFP_KERNEL);
     if (!chunk) {
@@ -212,17 +211,17 @@ static __always_inline int cfs_mk_fs_itbl(u64 *ret_fs_itbl_nid, struct block_dev
     }
 
     /*set up root inode entry and write it to the fs inode table*/
-    root_entry->gid_t = 0;
-    root_entry->uid_t = 0;
-    root_entry->ctime = root_entry->mtime = cpu_to_le64( get_seconds() );
     root_entry->ino = cpu_to_le64(CFS_INO_ROOT);
-    root_entry->inode_tbl.tid = cpu_to_le64(inode_tree_tid);
-    root_entry->inode_tbl.nid = cpu_to_le64(root_itbl_nid);
+    root_entry->uid = 0;
+    root_entry->gid = 0;
+    root_entry->ctime = root_entry->mtime = cpu_to_le64( get_seconds() );
+    /*all inodes start with just one chunk*/
+    root_entry->size_bytes = cpu_to_le64(CHUNK_LEAD_SLACK_BYTES + sizeof(struct cfsd_inode_chunk));
+    root_entry->data_nid = cpu_to_le64(inode_tree_tid);
+    root_entry->icount = 0;
+    root_entry->mode = cpu_to_le16(S_IFDIR | 0755);
     strcpy(root_entry->name, "/");
     root_entry->nlen = strlen(root_entry->name);
-    root_entry->mode = cpu_to_le16(S_IFDIR | 0755);
-    /*all inodes start with just one chunk*/
-    root_entry->size_bytes = cpu_to_le64(sizeof(struct cfsd_inode_chunk));
 
     smp_mb();
     retval = cfsio_update_node_sync(

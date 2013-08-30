@@ -42,11 +42,8 @@
  * 8b/entry) */ 
 #define RECLAIM_INO_MAX 131072ULL
 
-#define CHUNK_NUMENTRIES 102U
-#define CHUNK_LEAD_SLACK_BYTES 126
-#define CHUNK_BASE_ENTRY_OFF_BYTES 128
-#define CHUNK_MAX_UNSORTED 10
-
+#define CHUNK_NUMENTRIES 105U
+#define CHUNK_LEAD_SLACK_BYTES 6U
 
 struct cfs_node_addr {
     u64 tid;
@@ -99,24 +96,17 @@ struct cfs_inode {
 
     /**Address of the node holding this inode entry */ 
     struct cfs_node_addr parent_tbl;
-    /**Address to inode's own inode table, only set if inode is a 
-     * directory. */ 
-    struct cfs_node_addr inode_tbl;
+
+    /**Points to the inode's data, in case of a directory inode, 
+     * this points to the directory's inode table in the inode 
+     * tree. For files this points to the node in the file tree 
+     * containing its data */ 
+    struct cfs_node_addr data;
 };
 
 
 
 /*========= INLINE FUNCTIONS */
-
-/** 
- *  Return the tid of the inode tree
- *  @param csb the cfs-specific superblock information.
- *  @return tid of the inode tree
- */ 
-static __always_inline u64 CFS_INODE_TID(struct cfs_sb *csb)
-{
-    return csb->fs_inode_tbl.tid;
-}
 
 /** 
  *  Return the cfs-specific superblock info.
@@ -128,30 +118,6 @@ static __always_inline struct cfs_sb *CFS_SB(struct super_block *sb)
     return (struct cfs_sb *)sb->s_fs_info;
 }
 
-/** 
- * Lock inode. 
- * @description locks the inode, should be done at least when 
- *              setting i_blocks, i_bytes, i_size.
- * @param ci the cfs inode to lock 
- * @post ci is locked 
- */ 
-static __always_inline void CFSI_LOCK(struct cfs_inode *ci)
-{
-    spin_lock(&ci->vfs_inode.i_lock);
-}
-
-/** 
- * Unlock inode. 
- * @description unlocks the inode. Do so immediately after 
- *              finishing operations requiring a lock
- * @param ci the cfs inode to unlock 
- * @post ci is unlocked 
- */ 
-static __always_inline void CFSI_UNLOCK(struct cfs_inode *ci)
-{
-    spin_unlock(&ci->vfs_inode.i_lock);
-}
-
 /*require asserts only if in debug mode*/
 #ifdef CONFIG_CLYDEFS_DEBUG
 #define CLYDE_ASSERT(x)                                                 \
@@ -160,10 +126,10 @@ do {    if (x) break;                                                   \
                __FILE__, __func__, __LINE__, #x); dump_stack(); BUG();  \
 } while (0);
 
-#define CLYDE_DBG(fmt, a...) printk(KERN_ERR "cfs<%s>,%d -- " fmt, __FUNCTION__, __LINE__, ##a)
+#define CFS_DBG(fmt, a...) printk(KERN_ERR "cfs<%s>,%d -- " fmt, __FUNCTION__, __LINE__, ##a)
 #else
 #define CLYDE_ASSERT(x)
-#define CLYDE_DBG(fmt, a...) 
+#define CFS_DBG(fmt, a...) 
 #endif
 
 #endif //__CLYDEFS_GLOBAL_H

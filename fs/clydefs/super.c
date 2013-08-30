@@ -268,7 +268,7 @@ static int cfs_sync_fs(struct super_block *sb, int wait)
     u64 oldest_sb_offset;                   /*offset of oldest sb entry in supertable node(& buffer)*/
     int retval;
 
-    CLYDE_DBG("called\n");
+    CFS_DBG("called\n");
     cfsd_arr = kzalloc(sizeof(struct cfsd_sb)*CLYDE_NUM_SB_ENTRIES, GFP_KERNEL);
     if (!cfsd_arr) {
         CLYDE_ERR("%s - could not allocate memory for reading in persisted superblocks\n", __FUNCTION__);
@@ -384,7 +384,7 @@ static int cfs_fill_super(struct super_block *sb, void *data, int silent)
     int retval;
 
     CLYDE_ASSERT(data != NULL); /*ensure we were supplied with mount arguments (device, tid&nid of sb)*/
-    CLYDE_DBG("mounting superblock tbl @ (%llu,%llu)\n", mnt_args->tid, mnt_args->nid);
+    CFS_DBG("mounting superblock tbl @ (%llu,%llu)\n", mnt_args->tid, mnt_args->nid);
 
     bd = blkdev_get_by_path(mnt_args->dev_path, bd_mode, NULL);
 	if (!bd || IS_ERR(bd)) {
@@ -436,7 +436,7 @@ static int cfs_fill_super(struct super_block *sb, void *data, int silent)
         retval = 0; /*reset for error-detection*/
     }
 
-    CLYDE_DBG("found sb entry\n");
+    CFS_DBG("found sb entry\n");
 
     cfs_sb->superblock_tbl.tid = mnt_args->tid;
     cfs_sb->superblock_tbl.nid = mnt_args->nid;

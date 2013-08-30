@@ -27,6 +27,7 @@ struct cfsd_sb {
     __le32 generation;
     /**Identifier for tree holding file nodes*/
     __le64 file_tree_tid;
+
     /**Location of root directory inode table */ 
     struct cfsd_node_addr fs_inode_tbl;
     /**Location of the INO reclamation table */
@@ -40,33 +41,32 @@ struct cfsd_sb {
     u64 ino_tbl_end;
 };
 
-struct __inode_unused {
-    __le16 one;
-};
-
-
-struct cfsd_ientry_metadata {
-
-};
 /** 
  * On-disk structure of ClydeFS inode entry.
  */                                           
 struct cfsd_ientry {
-    /*These fields generally match fs.h 'struct inode' fields*/
+    /**inode number, unique to the inode */ 
     __le64 ino;
-    __le32 uid_t;
-    __le32 gid_t;
+    /**inode owner user id */ 
+    __le32 uid;
+    /**inode owner group id */ 
+    __le32 gid;
+    /**time of last modification */ 
     cfsd_time_t mtime;
+    /**time of creation*/ 
     cfsd_time_t ctime;
+    /**size, in bytes, of associated data */ 
     __le64 size_bytes;
+    /**id of associated data node. If a file, contains the file 
+     * data, if a directory, contains the directory's inode tbl*/ 
+    __le64 data_nid;
+    /**inode usage count, i_count */ 
+    __le32 icount;
+    /**actual length of name, at most CFS_NAME_LEN*/
+    __le16 nlen;
+    /**access mode 0ugo*/ 
     __le16 mode;
-    struct __inode_unused garbage;
-    /**actual length of name*/
-    u32 nlen;
-    /**Address of inode's inode table, set iff. this inode is a 
-     * directory */ 
-    struct cfsd_node_addr inode_tbl;
-    /**name of inode/dentry*/
+    /**name of inode/dentry */ 
     unsigned char name[CFS_NAME_LEN];
 };
 
@@ -143,13 +143,9 @@ static __always_inline void __copy2d_timespec(__le64 *dst, struct timespec const
     *dst = cpu_to_le64(src->tv_sec);
 }
 
-
-
-
-
 /**The size and layout of an inode chunk*/ 
 struct cfsd_inode_chunk {
-    /*u8 slack[126]; -- skipped in inode.c code*/
+    /*u8 slack[CHUNK_LEAD_SLACK_BYTES]; -- skipped in inode.c code*/
     u8 entries_used;
     u8 last_chunk;
     struct cfsd_ientry entries[CHUNK_NUMENTRIES];
