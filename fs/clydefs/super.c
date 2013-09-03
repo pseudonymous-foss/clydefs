@@ -168,7 +168,29 @@ static void cfs_inode_init_once(void *data)
 int cfs_write_inode(struct inode *i, struct writeback_control *wbc)
 {
     CFS_DBG("called\n");
-	return cfsi_inode_persist(i1);
+    CLYDE_STUB;
+    /*FIXME IMPLEMENT*/
+	/*return cfsi_inode_persist(i);*/
+    return -1;
+}
+
+/**
+ * Called as the last reference to an inode is dropped and it is 
+ * about to be removed.
+ */
+int cfs_drop_inode(struct inode *i)
+{
+    /*documentation says i_lock is already held*/
+    struct cfs_inode *ci = NULL;
+    ci = CFS_INODE(i);
+    if (ci->parent != NULL) {
+        /*parent inode was assigned, decrement its reference*/
+        iput(&ci->parent->vfs_inode); /*no lock needed*/
+        ci->parent = NULL;
+    }
+    /*forward to default implementation*/
+    /*FIXME - not entirely sure the generic function always drops an inode*/
+    return generic_drop_inode(i);
 }
 
 /** 
@@ -590,9 +612,14 @@ static struct file_system_type clydefs_fs_type = {
 };
 
 static const struct super_operations cfs_super_operations = {
+    /*allocate fresh inode*/
     .alloc_inode = cfs_alloc_inode,
+    /*remove inode from disk*/
     .destroy_inode = cfs_destroy_inode,
-    .write_inode = cfs_write_inode,
+    /*when informed by bdi to write a dirty inode to disk*/
+    /*.write_inode = cfs_write_inode,*/
+    /*called when an inode is about to be dropped*/
+    .drop_inode = cfs_drop_inode,
     .statfs = simple_statfs,
     .put_super = cfs_put_super,
     .sync_fs = cfs_sync_fs,

@@ -89,13 +89,34 @@ struct cfs_sb {
 };
 
 /** 
+ * Describes the location of an ientry within 
+ * a directory inode. 
+ */
+struct ientry_loc
+{
+    /**in which chunk was the entry located*/ 
+    u64 chunk_ndx;
+    /**offset within chunk */ 
+    u64 chunk_off;
+};
+
+/** 
  * clydefs inode structure 
  */
 struct cfs_inode {
     struct inode vfs_inode;
 
-    /**Address of the node holding this inode entry */ 
-    struct cfs_node_addr parent_tbl;
+    /**true if the inode has been persisted or was loaded from 
+     * disk, only look at dsk_* vars if this is set   */
+    u8 on_disk;
+
+    /**Location of where the ientry of this inode is located 
+     * within the inode table of the parent directory. */ 
+    struct ientry_loc dsk_ientry_loc;
+
+    /**reference to parent inode whose itbl contains this inode's 
+     * entry. , modify via i_lock*/
+    struct cfs_inode *parent;
 
     /**Dentry holding the name under which this inode is 
      * persisted */ 
