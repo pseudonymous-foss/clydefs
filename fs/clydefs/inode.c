@@ -11,6 +11,7 @@ const struct inode_operations cfs_dir_inode_ops;
 const struct inode_operations cfs_file_inode_ops;
 extern const struct file_operations cfs_file_ops;
 extern const struct file_operations cfs_dir_file_ops;
+extern const struct address_space_operations cfs_aops;
 
 static struct kmem_cache *chunk_pool = NULL;
 
@@ -373,11 +374,13 @@ static __always_inline int chunk_lookup(
  *      -ENOMEM => allocations failed
  *      -EIO => error while reading a chunk
  *      -1(NOT_FOUND) => element not present in parent directory
+ *  @pre ref_buf points to an allocated buffer large enough to
+ *       hold one chunk
  *  @post on success; *ret_buf holds the chunk in which the
  *        entry was found, *ret_entry points to the entry inside
  *        the chunk which matched the search key.
  */ 
-static int __must_check cfsi_ientry_find(struct cfsd_inode_chunk *ret_buf, u64* ret_ndx, struct cfs_inode *parent, struct dentry *search_dentry)
+static int __must_check cfs_ientry_find(struct cfsd_inode_chunk *ret_buf, u64 *ret_ndx, struct cfs_inode *parent, struct dentry *search_dentry)
 {
     struct cfsd_ientry search_key;          /*populated to function as the search key*/
     struct cfs_node_addr *itbl = NULL;      /*address of parent directory's inode table*/
@@ -677,6 +680,7 @@ struct inode *cfsi_getroot(struct super_block *sb)
 
     root_inode->i_op = &cfs_dir_inode_ops;
     root_inode->i_fop = &cfs_dir_file_ops;
+    root_inode->i_mapping->a_ops = &cfs_aops;
 
     /*doesn't actually release any locks, only purges 'I_NEW' flag from the inode state*/
     unlock_new_inode(root_inode);
@@ -689,6 +693,68 @@ err_io:
     kmem_cache_free(chunk_pool, chunk_curr);
 err_alloc:
     return ERR_PTR(errval);
+}
+
+static __cfsi_inode_update_done(struct cfsio_rq_cb_data *req_data, void *endio_cb_data, int error)
+{
+    if (error) {
+        CFS_DBG("cfsi_inode_update complete handler -- error detected\n");
+    }
+    /*endio_cb_data => chunk buffer*/
+    kmem_cache_free(chunk_pool, endio_cb_data);
+}
+
+/** 
+ * Update on-disk inode entry.
+ * @param i inode to persist 
+ * @pre i->parent_tbl initialised 
+ * @pre entries represented in cfs_ientry are initialised
+*/
+int cfsi_inode_update(struct inode *i, int sync)
+{
+    /*todo have small variable to indicate if the inode is NEW, insert the inode if so ?*/
+    struct super_block *sb = NULL;
+    struct block_device *bd = NULL;
+    struct cfsd_inode_chunk *chunk = NULL;
+    struct dentry *search_dentry = NULL;
+    struct cfs_inode *ci = NULL;
+
+    int retval;
+
+    CLYDE_ASSERT(i != NULL);
+    sb = i->i_sb;
+    bd = i->i_bdev;
+    ci = CFS_INODE(i);
+    /*to persist an inode entry we need the name it was saved under*/
+    CLYDE_ASSERT(ci->ientry_dentry != NULL);
+
+    chunk = kmem_cache_alloc(chunk_pool, GFP_KERNEL);
+    if (!chunk) {
+        CFS_DBG("failed to allocate chunk\n");
+        retval = -ENOMEM;
+        goto out;
+    }
+    cfs_ientry_find(chunk, &ret_ndx, cfsi_parent_ptr, &search_dentry);
+    
+    if (sync) {
+        retval = cfsio_update_node_sync(bd,NULL,NULL, CFS_INODE_TID(CSB_SB(sb)), NID, off, len, chunk);
+        
+    } else {
+        retval = cfsio_update_node(bd, cfsi_inode_update, chunk, CFS_INODE_TID(CSB_SB(sb)), NID, off, len, chunk);
+    }
+
+out:
+    return retval;
+}
+
+/** 
+ * Delete an inode from disk 
+ * @param i inode to delete 
+ * @param sync if set, handle deletion synchronously 
+ */ 
+int cfsi_inode_delete(struct inode *i, int sync)
+{
+
 }
 
 /* 
@@ -745,9 +811,10 @@ static struct inode *cfs_mk_inode(struct inode *dir, umode_t mode)
     i->i_ctime = i->i_mtime = i->i_atime = CURRENT_TIME;
     i->i_size = 0;
     ci->parent_tbl = CFS_INODE(dir)->data;
-    insert_inode_hash(i); /*hash ino based on sb and ino*/
+    insert_inode_hash(i); /*hash inode for lookup, based on sb and ino*/
     
     cfssup_sb_inc_generation(csb); /*we've taken an ino, make sb generation reflect this*/
+    /*TODO write inode to disk*/
 out:
     return i;
 }
@@ -836,7 +903,9 @@ static int cfs_vfsi_create(struct inode *dir, struct dentry *d, umode_t mode, bo
 
     i->i_op = &cfs_file_inode_ops;
     i->i_fop = &cfs_file_ops;
-    /*mark_inode_dirty_sync(i);*/
+    i->i_mapping->a_ops = &cfs_aops;
+    mark_inode_dirty_sync(i);
+
     retval = cfs_vfs_ientry_add(dir,i,d);
 out:
     return retval;
@@ -874,7 +943,7 @@ static struct dentry *cfs_vfsi_lookup(struct inode *dir, struct dentry *d, unsig
         return ERR_PTR(-ENOMEM);
     }
 
-    retval = cfsi_ientry_find(c, &ientry_ndx, CFS_INODE(dir), d);
+    retval = cfs_ientry_find(c, &ientry_ndx, CFS_INODE(dir), d);
     if (retval) {
         if (retval != NOT_FOUND)
             CFS_WARN("failed to lookup entry, but the error wasn't (-1=>NOT_FOUND), something ELSE happened\n");
@@ -930,6 +999,7 @@ static int cfs_vfsi_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode
 
     i->i_op = &cfs_dir_inode_ops;
     i->i_fop = &cfs_dir_file_ops;
+    i->i_mapping->a_ops = &cfs_aops;
     inode_inc_link_count(i);
 
     goto out; /*success*/

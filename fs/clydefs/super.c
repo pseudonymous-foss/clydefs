@@ -165,6 +165,12 @@ static void cfs_inode_init_once(void *data)
 	inode_init_once(&i->vfs_inode);
 }
 
+int cfs_write_inode(struct inode *i, struct writeback_control *wbc)
+{
+    CFS_DBG("called\n");
+	return cfsi_inode_persist(i1);
+}
+
 /** 
  * Initialise the inode cache. 
  */ 
@@ -586,6 +592,7 @@ static struct file_system_type clydefs_fs_type = {
 static const struct super_operations cfs_super_operations = {
     .alloc_inode = cfs_alloc_inode,
     .destroy_inode = cfs_destroy_inode,
+    .write_inode = cfs_write_inode,
     .statfs = simple_statfs,
     .put_super = cfs_put_super,
     .sync_fs = cfs_sync_fs,

@@ -97,6 +97,10 @@ struct cfs_inode {
     /**Address of the node holding this inode entry */ 
     struct cfs_node_addr parent_tbl;
 
+    /**Dentry holding the name under which this inode is 
+     * persisted */ 
+    struct dentry *ientry_dentry;
+
     /**Points to the inode's data, in case of a directory inode, 
      * this points to the directory's inode table in the inode 
      * tree. For files this points to the node in the file tree 
