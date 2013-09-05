@@ -32,6 +32,25 @@ static struct kmem_cache *chunk_pool = NULL;
 enum CHUNK_LOOKUP_RES { FOUND = 0, NOT_FOUND = 1 };
 
 /** 
+ * Increment inode usage count.
+ * @pre i->i_lock must be held 
+ * @note fetched from fs/inode.c __iget, which isn't an exported 
+ *       symbol
+ */ 
+static __always_inline void cfs_iref_get(struct cfs_inode *ci)
+{
+	atomic_inc(&ci->vfs_inode.i_count);
+}
+
+/** 
+ * Decrement inode usage count. 
+ */ 
+static __always_inline void cfs_iref_put(struct cfs_inode *ci)
+{
+    iput(&ci->vfs_inode);
+}
+
+/** 
  * Return the inode number of an ientry formatted to CPU 
  * endianess. 
  * @return ientry inode number (ino) 
@@ -262,6 +281,7 @@ static __always_inline void __copy2d_inode(struct cfsd_ientry *dst, struct cfs_i
 /** 
  *  Initialise inode with values from the inode entry disk
  *  representation and the file system superblock.
+ *  @pre i_lock of inode 'ci' is held
  */
 static __always_inline void cfs_inode_init(
     struct cfs_inode *parent, struct cfs_inode *ci, 
@@ -272,6 +292,7 @@ static __always_inline void cfs_inode_init(
     struct inode *i = NULL;
 
     CLYDE_ASSERT(ci != NULL);
+    CLYDE_ASSERT( spin_is_locked(&ci->vfs_inode.i_lock) );
     CLYDE_ASSERT(src != NULL);
     CLYDE_ASSERT(loc != NULL);
     i = &ci->vfs_inode;
@@ -290,18 +311,13 @@ static __always_inline void cfs_inode_init(
     } else {
         /*Associate with parent*/
         spin_lock(&parent->vfs_inode.i_lock);
-        __iget(&parent->vfs_inode);
+        cfs_iref_get(parent);
         ci->parent = parent;
         spin_unlock(&parent->vfs_inode.i_lock);        
     }
-
-    spin_lock(&ci->vfs_inode.i_lock);
     ci->on_disk = 1;
     ci->dsk_ientry_loc = *loc;
-    spin_unlock(&ci->vfs_inode.i_lock);
     
-    /*ERRORI root node would have NULL for parent, this would crash, what to do*/
-
     /*set various constants*/
     i->i_blkbits = CFS_BLOCKSIZE_SHIFT;
 }
@@ -660,6 +676,7 @@ static __always_inline struct inode *cfs_iget(
     )
 {
     struct inode *i = NULL;
+    struct cfs_inode *ci = NULL;
     u64 ino;
 
     CLYDE_ASSERT(dir != NULL);
@@ -673,9 +690,12 @@ static __always_inline struct inode *cfs_iget(
         /*existing inode object found, not newly allocated*/
         return i;
     }
+    ci = CFS_INODE(i);
 
     /*not found in cache, freshly allocated object*/
-    cfs_inode_init(dir, CFS_INODE(i), ientry, loc);
+    CFSI_LOCK(ci);
+    cfs_inode_init(dir, ci, ientry, loc);
+    CFSI_UNLOCK(ci);
     unlock_new_inode(i); /*all done, others may access the inode now*/
     return i;
 }
@@ -693,6 +713,7 @@ struct inode *cfsi_getroot(struct super_block *sb)
     struct inode *root_inode = NULL;
     struct cfs_inode *root_cfs_i = NULL;
     struct cfs_node_addr *fs_inode_tbl = NULL;
+    struct ientry_loc entry_loc;
     int errval;
 
     CLYDE_ASSERT(sb != NULL);
@@ -732,7 +753,7 @@ struct inode *cfsi_getroot(struct super_block *sb)
     /*we just created this inode (=> loading the FS)*/
     root_cfs_i = CFS_INODE(root_inode);
     CFSI_LOCK(root_cfs_i);
-    cfs_inode_init(NULL, root_cfs_i, root_ientry, NULL); /*ERRORI - NULL will not work*/
+    cfs_inode_init(NULL, root_cfs_i, root_ientry, &entry_loc);
     CFSI_UNLOCK(root_cfs_i);
 
     root_inode->i_op = &cfs_dir_inode_ops;
@@ -825,6 +846,7 @@ VFS operations and helpers
 /** 
  * Add an inode entry for 'i' to directory 'dir' identified by 
  * name in 'i_d'. 
+ * @pre i inode with a usage count of 1 or more. 
  */ 
 static __always_inline int cfs_vfs_ientry_add(struct inode *dir, struct inode *i, struct dentry *i_d)
 {
@@ -832,7 +854,8 @@ static __always_inline int cfs_vfs_ientry_add(struct inode *dir, struct inode *i
     retval = cfs_ientry_insert(CFS_INODE(dir), CFS_INODE(i), i_d);
     if (retval) {
         inode_dec_link_count(i);
-        iput(i);
+        /*if i is a newly created inode, this render it eligible for reclamation*/
+        cfs_iref_put(CFS_INODE(i));
         goto out;
     }
     d_instantiate(i_d, i); /*FIXME : ensure inode count has been incremented*/
@@ -872,7 +895,7 @@ static struct inode *cfs_mk_inode(struct inode *dir, umode_t mode)
     i->i_size = 0;
     /*assign parent (and increment parent's usage to reflect its use)*/
     spin_lock(&dir->i_lock);
-    __iget(dir);
+    cfs_iref_get(CFS_INODE(dir));
     ci->parent = CFS_INODE(dir);
     spin_unlock(&dir->i_lock);
     insert_inode_hash(i); /*hash inode for lookup, based on sb and ino*/
@@ -1080,7 +1103,7 @@ err_add_ientry:
 err_mk_itbl:
     cfs_ino_release(dir->i_sb, i->i_ino);
     inode_dec_link_count(dir);
-    iput(i);
+    cfs_iref_put(ci);
 out:
     return retval;
 }

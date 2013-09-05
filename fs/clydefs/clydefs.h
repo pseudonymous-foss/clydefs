@@ -3,6 +3,7 @@
 
 #include <linux/fs.h>
 #include <linux/spinlock.h>
+#include <linux/backing-dev.h>
 
 /*FIXME there must be a better way*/
 #define U64_MAX_VALUE 18446744073709551615ULL
@@ -86,6 +87,9 @@ struct cfs_sb {
     
     /**Location of the superblock table */ 
     struct cfs_node_addr superblock_tbl;
+
+    /**bdi to register with this vfs*/ 
+    struct backing_dev_info bdi;
 };
 
 /** 

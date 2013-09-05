@@ -362,10 +362,11 @@ err_alloc:
  */ 
 static void cfs_put_super(struct super_block *sb)
 {
-    struct cfs_sb *cfs_sb = NULL;
+    struct cfs_sb *csb = NULL;
     printk("clydefs: unmounting fs...\n");
-    cfs_sb = CFS_SB(sb);
-    kfree(cfs_sb->ino_buf);
+    csb = CFS_SB(sb);
+    kfree(csb->ino_buf);
+    bdi_destroy(&csb->bdi);
     kfree(sb->s_fs_info); /*free fs-specific superblock info*/
     sb->s_fs_info = NULL;
 }
@@ -498,6 +499,7 @@ static int cfs_fill_super(struct super_block *sb, void *data, int silent)
 
     /*link superblock to fs-specific superblock info*/
     sb->s_fs_info = cfs_sb;
+    sb->s_bdi = & cfs_sb->bdi;
 
     root = cfsi_getroot(sb);
     if (IS_ERR(root)) {
@@ -513,18 +515,26 @@ static int cfs_fill_super(struct super_block *sb, void *data, int silent)
     }
 
     if (!S_ISDIR(root->i_mode)) {
-		dput(sb->s_root);
-		sb->s_root = NULL;
 		CLYDE_ERR("Root inode did not set as directory!?\n");
 		retval = -EINVAL;
 		goto err_root_dirmode;
 	}
 
+    /*FIXME - does this suffice to enable read-ahead ?*/
+    cfs_sb->bdi.ra_pages = 32; /*64kb read-ahead*/
+    retval = bdi_setup_and_register(&cfs_sb->bdi, "clydefs", BDI_CAP_MAP_COPY);
+	if (retval) {
+		CLYDE_ERR("Failed to setup & register sb bdi interface\n");
+		goto err_bdi_reg;
+	}
+
     /*FIXME -- add bdi info for writeback support if wanted*/
     kfree(cfsd_sb_arr);
     return 0; /*success*/
-
+err_bdi_reg:
 err_root_dirmode:
+    dput(sb->s_root);
+    sb->s_root = NULL;
 err_root_dentry:
     iput(root);
 err_read_root_inode:
