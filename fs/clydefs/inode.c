@@ -64,71 +64,6 @@ static __always_inline u64 ientry_ino(struct cfsd_ientry const * const e)
 }
 
 /** 
- * Populate cfs inode with values from a disk inode entry. 
- * @param dst the inode to populate 
- * @param src the inode entry read from disk 
- * @pre the i_lock associated the inode is locked 
- * @post dst will be populated with the values from the disk 
- *       inode entry, converted to the native CPU format.
- * @note does not read nlen & name. 
- * @note the tid of 'data' still need to be set 
- *       with the superblock values.
- */ 
-static __always_inline void __copy2c_inode(struct cfs_inode *dst, struct cfsd_ientry const * const src)
-{
-    struct inode *vfs_i = NULL;
-    CLYDE_ASSERT( dst != NULL );
-    CLYDE_ASSERT( src != NULL );
-    CLYDE_ASSERT( spin_is_locked(&dst->vfs_inode.i_lock) );
-
-    vfs_i = &dst->vfs_inode;
-
-    /*set regular inode fields*/
-    vfs_i->i_ino = le64_to_cpu(src->ino);
-    vfs_i->i_uid = le32_to_cpu(src->uid);
-    vfs_i->i_gid = le32_to_cpu(src->gid);
-    __copy2c_timespec(&vfs_i->i_ctime, &src->ctime);
-    __copy2c_timespec(&vfs_i->i_mtime, &src->mtime);
-    __copy2c_timespec(&vfs_i->i_atime, &src->mtime); /*we don't record access time*/
-    vfs_i->i_size = le64_to_cpu(src->size_bytes);
-    dst->data.nid = le64_to_cpu(src->data_nid);
-    atomic_set(&vfs_i->i_count,le32_to_cpu(src->icount));
-    /*nlen omitted, not represented in inode*/
-    vfs_i->i_mode = le16_to_cpu(src->mode);
-    /*name omitted, not represented in inode*/
-}
-
-/** 
- * Copies in-memory values into on-disk inode representation.
- * @param dst the on-disk representation to populate 
- * @param src the in-memory representation from which the values 
- *            are drawn.
- * @note cfs_inode parent addr should be set afterwards by 
- *       initiialization code
- */ 
-static __always_inline void __copy2d_inode(struct cfsd_ientry *dst, struct cfs_inode const * const src)
-{
-    struct inode const *i = NULL;
-
-    CLYDE_ASSERT(dst != NULL);
-    CLYDE_ASSERT(src != NULL);
-    i = &src->vfs_inode;
-
-    /*NOTE: does not set nlen & name -- if persisting to an ientry, use */
-    dst->ino = cpu_to_le64(i->i_ino);
-    dst->uid = cpu_to_le32(i->i_uid);
-    dst->gid = cpu_to_le32(i->i_gid);
-    __copy2d_timespec(&dst->mtime, &i->i_mtime);
-    __copy2d_timespec(&dst->ctime, &i->i_ctime);
-    dst->size_bytes = cpu_to_le64(i->i_size);
-    dst->data_nid = cpu_to_le64(src->data.nid);
-    dst->icount = cpu_to_le32(atomic_read(&i->i_count));
-    /*nlen  -- OMITTED*/
-    dst->mode = cpu_to_le16(i->i_mode);
-    /*name -- OMITTED*/
-}
-
-/** 
  * handles the initialisation aspects common to all newly minted 
  * inodes. 
  * @param parent parent inode or NULL if initialising the root 
@@ -172,16 +107,16 @@ static __always_inline void __cfs_i_common_init(struct cfs_inode *parent, struct
 
     /*set inode operations*/
     if (likely(i_mode & S_IFREG)) { /*FILE*/
-        ci->status = IT_FILE;
+        ci->status = IS_FILE;
         i->i_op = &cfs_file_inode_ops;
         i->i_fop = &cfs_file_ops;
     } else if (i_mode & S_IFDIR) { /*DIR*/
-        ci->status = IT_DIR;
+        ci->status = IS_DIR;
         i->i_op = &cfs_dir_inode_ops;
         i->i_fop = &cfs_dir_file_ops;
     } else {
         CFS_WARN("could not determine file type - setting regular file ops\n");
-        ci->status = IT_FILE;
+        ci->status = IS_FILE;
         i->i_op = &cfs_file_inode_ops;
         i->i_fop = &cfs_file_ops;
     }
@@ -372,41 +307,6 @@ static __always_inline void cfs_inode_init(
 
     ci->on_disk = 1;
     ci->dsk_ientry_loc = *loc;
-}
-
-/**Fully populate an ientry for in preparation for writing it 
- * to disk based on the inode's own data and referenced dentry.
- * @param dst the ientry to populate 
- * @param src the inode from which to source metadata 
- * @param  
- * @return 0 on success, -ENAMETOOLONG if the name exceeds the 
- *         filesystem maximum name length.
- * @pre src is a fully initialised inode with an associated 
- *      dentry.
- */ 
-static __always_inline int cfs_ientry_init(
-    struct cfsd_ientry *dst, 
-    struct cfs_inode const * const src,
-    struct dentry const * const src_d)
-{
-    struct inode const *i = NULL;
-
-    CLYDE_ASSERT(dst != NULL);
-    CLYDE_ASSERT(src != NULL);
-    CLYDE_ASSERT(src_d != NULL);
-
-    i = &src->vfs_inode;
-    CLYDE_ASSERT(i != NULL);
-
-    /*handle metadata*/
-    __copy2d_inode(dst,src);
-    if (src_d->d_name.len > CFS_NAME_LEN) {
-        return -ENAMETOOLONG;
-    }
-    strncpy(dst->name, src_d->d_name.name, src_d->d_name.len);
-    dst->nlen = cpu_to_le16((u16)src_d->d_name.len);
-
-    return 0; /*success*/
 }
 
 /** 
@@ -680,21 +580,13 @@ static int __mkdir_mkitbl(struct cfs_node_addr *ret_itbl, struct super_block *sb
         goto out;
     }
     ret_itbl->tid = CFS_INODE_TID(csb);
-    retval = cfsio_insert_node_sync(
-        bd, &ret_itbl->nid, ret_itbl->tid, 
-        CHUNK_SIZE_BYTES
-    );
+    retval = cfsc_mk_itbl_node(&ret_itbl->nid, bd, ret_itbl->tid);
     if (retval) {
         goto err_node_ins;
     }
-    cfsc_chunk_init_common(c);
+    cfsc_chunk_init(c);
 
-    retval = cfsio_update_node_sync(
-        bd, NULL, NULL, 
-        ret_itbl->tid, ret_itbl->nid, 
-        0, 
-        sizeof(struct cfsd_inode_chunk), c
-    );
+    retval = cfsc_write_chunk_sync(bd, ret_itbl->tid, ret_itbl->nid, c, 0);
     if (retval) {
         goto err_node_write;
     }

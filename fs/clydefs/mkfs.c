@@ -180,7 +180,7 @@ static __always_inline int cfs_mk_fs_itbl(u64 *ret_fs_itbl_nid, struct block_dev
         retval = -ENOMEM;
         goto err_alloc_chunk;
     }
-    cfsc_chunk_init_common(chunk);
+    cfsc_chunk_init(chunk);
 
     /*create and write the empty root inode table chunk*/
     retval = cfsio_insert_node_sync(
@@ -190,7 +190,7 @@ static __always_inline int cfs_mk_fs_itbl(u64 *ret_fs_itbl_nid, struct block_dev
         CLYDE_ERR("Failed to create node for root's inode table in inode tree (tid:%llu)\n", inode_tree_tid);
         goto err_mk_root_itbl;
     }
-    cfsc_chunk_init_common(chunk);
+    cfsc_chunk_init(chunk);
     retval = cfsc_write_chunk_sync(bd, inode_tree_tid, root_itbl_nid, chunk, 0);
     if (retval) {
         CLYDE_ERR("Failed to write contents of root's inode table in inode tree (tid:%llu,nid:%llu)\n", inode_tree_tid, root_itbl_nid);
@@ -219,7 +219,7 @@ static __always_inline int cfs_mk_fs_itbl(u64 *ret_fs_itbl_nid, struct block_dev
     strcpy(root_entry.name, "/");
     root_entry.nlen = strlen(root_entry.name);
 
-    if ( cfsc_chunk_insert_entry(&root_entry_ndx, chunk, &root_entry) ){
+    if ( cfsc_chunk_entry_insert(&root_entry_ndx, chunk, &root_entry) ){
         /*we cannot fail inserting into an empty chunk, must be a programming error*/
         CFS_DBG("Failed inserting root_entry into newly allocated, empty chunk\n");
         BUG();

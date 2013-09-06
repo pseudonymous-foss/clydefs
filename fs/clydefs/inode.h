@@ -3,7 +3,7 @@
 #ifndef __CLYDEFS_INODE_H
 #define __CLYDEFS_INODE_H
 #include "clydefs.h"
-//const struct inode_operations clydefs_dir_inode_ops;
+#include "clydefs_disk.h"
 
 /** 
  * Get the fs-specific parent structure containing the inode. 
@@ -67,6 +67,86 @@ static __always_inline void CFSI_UNLOCK(struct cfs_inode *ci)
 {
     spin_unlock(&ci->vfs_inode.i_lock);
 }
+
+/** 
+ * Populate cfs inode with values from a disk inode entry. 
+ * @param dst the inode to populate 
+ * @param src the inode entry read from disk 
+ * @pre the i_lock associated the inode is locked 
+ * @post dst will be populated with the values from the disk 
+ *       inode entry, converted to the native CPU format.
+ * @note does not read nlen & name. 
+ * @note the tid of 'data' still need to be set 
+ *       with the superblock values.
+ */ 
+static __always_inline void __copy2c_inode(struct cfs_inode *dst, struct cfsd_ientry const * const src)
+{
+    struct inode *vfs_i = NULL;
+    CLYDE_ASSERT( dst != NULL );
+    CLYDE_ASSERT( src != NULL );
+    CLYDE_ASSERT( spin_is_locked(&dst->vfs_inode.i_lock) );
+
+    vfs_i = &dst->vfs_inode;
+
+    /*set regular inode fields*/
+    vfs_i->i_ino = le64_to_cpu(src->ino);
+    vfs_i->i_uid = le32_to_cpu(src->uid);
+    vfs_i->i_gid = le32_to_cpu(src->gid);
+    __copy2c_timespec(&vfs_i->i_ctime, &src->ctime);
+    __copy2c_timespec(&vfs_i->i_mtime, &src->mtime);
+    __copy2c_timespec(&vfs_i->i_atime, &src->mtime); /*we don't record access time*/
+    vfs_i->i_size = le64_to_cpu(src->size_bytes);
+    dst->data.nid = le64_to_cpu(src->data_nid);
+    atomic_set(&vfs_i->i_count,le32_to_cpu(src->icount));
+    /*nlen omitted, not represented in inode*/
+    vfs_i->i_mode = le16_to_cpu(src->mode);
+    /*name omitted, not represented in inode*/
+}
+
+/** 
+ * Copies in-memory values into on-disk inode representation.
+ * @param dst the on-disk representation to populate 
+ * @param src the in-memory representation from which the values 
+ *            are drawn.
+ */ 
+static __always_inline void __copy2d_inode(struct cfsd_ientry *dst, struct cfs_inode const * const src)
+{
+    struct inode const *i = NULL;
+
+    CLYDE_ASSERT(dst != NULL);
+    CLYDE_ASSERT(src != NULL);
+    i = &src->vfs_inode;
+
+    /*NOTE: does not set nlen & name -- if persisting to an ientry, use */
+    dst->ino = cpu_to_le64(i->i_ino);
+    dst->uid = cpu_to_le32(i->i_uid);
+    dst->gid = cpu_to_le32(i->i_gid);
+    __copy2d_timespec(&dst->mtime, &i->i_mtime);
+    __copy2d_timespec(&dst->ctime, &i->i_ctime);
+    dst->size_bytes = cpu_to_le64(i->i_size);
+    dst->data_nid = cpu_to_le64(src->data.nid);
+    dst->icount = cpu_to_le32(atomic_read(&i->i_count));
+    /*nlen  -- OMITTED*/
+    dst->mode = cpu_to_le16(i->i_mode);
+    /*name -- OMITTED*/
+}
+
+static __always_inline void cfsi_i_wlock(struct cfs_inode *ci)
+{
+    CLYDE_ASSERT(ci != NULL);
+    spin_lock(&ci->vfs_inode.i_lock);
+    spin_lock(&ci->io_lock);
+    smp_mb();
+}
+
+static __always_inline void cfsi_i_wunlock(struct cfs_inode *ci)
+{
+    CLYDE_ASSERT(ci != NULL);
+    smp_mb();
+    spin_unlock(&ci->vfs_inode.i_lock);
+    spin_unlock(&ci->io_lock);
+}
+
 
 struct inode *cfsi_getroot(struct super_block *sb);
 

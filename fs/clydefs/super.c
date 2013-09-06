@@ -184,13 +184,13 @@ int cfs_drop_inode(struct inode *i)
     /*documentation says i_lock is already held*/
     struct cfs_inode *ci = NULL;
     ci = CFS_INODE(i);
-    if (ci->status != IT_UNINITIALISED) {
+    if (ci->status != IS_UNINITIALISED) {
         if (ci->parent != NULL) {
             /*parent inode was assigned, decrement its reference*/
             iput(&ci->parent->vfs_inode); /*no lock needed*/
             ci->parent = NULL;
         }
-        ci->status = IT_UNINITIALISED;
+        ci->status = IS_UNINITIALISED;
     }
     /*forward to default implementation*/
     /*FIXME - not entirely sure the generic function always drops an inode*/

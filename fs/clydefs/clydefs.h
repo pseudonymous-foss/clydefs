@@ -101,7 +101,7 @@ struct ientry_loc
     u64 chunk_off;
 };
 
-enum CFSI_TYPE { IT_UNINITIALISED = 0, IT_FILE, IT_DIR };
+enum CFSI_STATUS { IS_UNINITIALISED = 0, IS_FILE, IS_DIR };
 /** 
  * clydefs inode structure 
  */
@@ -114,7 +114,7 @@ struct cfs_inode {
 
     /**if initialised via cfs_inode_init[_new] functions, this is 
      * set. Guarantees everything but dsk_* vars are initialised. */ 
-    enum CFSI_TYPE status;
+    enum CFSI_STATUS status;
 
     /**Location of where the ientry of this inode is located 
      * within the inode table of the parent directory. */ 
@@ -126,13 +126,18 @@ struct cfs_inode {
 
     /**Dentry holding the name under which this inode is 
      * persisted */ 
-    struct dentry *ientry_dentry;
+    struct dentry *itbl_dentry;
 
     /**Points to the inode's data, in case of a directory inode, 
      * this points to the directory's inode table in the inode 
      * tree. For files this points to the node in the file tree 
      * containing its data */ 
     struct cfs_node_addr data;
+
+    /**Set if an inode was modified in a way requiring to sort 
+     * the chunk once the change is being written. At the moment 
+     * only renaming the inode can trigger this */ 
+    u8 sort_on_update;
 
     /**Disk lock, must be acquired while reading a chunk off disk 
      * or while performing a write operation */ 

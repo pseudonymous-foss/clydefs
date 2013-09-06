@@ -1,8 +1,81 @@
 #include "clydefs.h"
 #include "chunk.h"
+#include "io.h"
+#include "inode.h"
 
 static struct kmem_cache *chunk_pool = NULL;
 
+#define CHUNK_NUM_ITEMS(c) (CHUNK_NUMENTRIES - (c)->hdr.entries_free)
+/**Value indicating an unused offset, must be higher than the 
+ * number of entries possible to have in a chunk */ 
+#define OFFSET_UNUSED 0b11111111U
+
+static __always_inline int __write_chunk_sync(struct block_device *bd, u64 tid, u64 nid, struct cfsd_inode_chunk *c, int chunk_off) 
+{
+    return cfsio_update_node_sync(
+        bd, NULL, NULL, tid, nid, 
+        chunk_off * CHUNK_SIZE_DISK_BYTES, CHUNK_SIZE_BYTES, c
+    );
+}
+
+static __always_inline int __read_chunk_sync(struct block_device *bd, u64 tid, u64 nid, struct cfsd_inode_chunk *c, int chunk_off)
+{
+    return cfsio_read_node_sync(
+        bd, NULL, NULL, 
+        tid, nid, chunk_off * CHUNK_SIZE_DISK_BYTES, 
+        CHUNK_SIZE_BYTES, c
+    );
+}
+
+static __always_inline u64 __entry_offset(u64 entry_ndx)
+{
+    return offsetof(struct cfsd_inode_chunk, entries) + sizeof(struct cfsd_ientry) * entry_ndx;
+}
+
+/** 
+ * Write chunk header 
+ * @param c the chunk whose header is to be written to disk 
+ * @param itbl address of the node in which the inode table is 
+ *             located.
+ * @param chunk_off chunk offset of the chunk whose header is to 
+ *                  be overridden. E.g. 0 => lead chunk
+*/ 
+static __always_inline int __write_chunk_hdr_sync(
+    struct block_device *bd,
+    struct cfsd_inode_chunk *c,
+    struct cfs_node_addr *itbl,
+    u64 chunk_off)
+{
+    return cfsio_update_node_sync(
+        bd, NULL, NULL, 
+        itbl->tid, itbl->nid, 
+        /*calculate the offset within the chunk marking the beginning of the cfsd_chunk_hdr*/
+        (chunk_off * CHUNK_SIZE_DISK_BYTES) + (CHUNK_SIZE_BYTES - sizeof(struct cfsd_chunk_hdr)), 
+        sizeof(struct cfsd_chunk_hdr),
+        &c->hdr
+    );
+}
+
+static __always_inline void __offlist_init(struct cfsd_inode_chunk *c)
+{
+    int i;
+    u8 *off_list;
+    CLYDE_ASSERT(c != NULL);
+    off_list = c->hdr.off_list;
+    for (i=0; i<CHUNK_NUMENTRIES; i++) {
+        off_list[i] = OFFSET_UNUSED;
+    }
+}
+
+static __always_inline void __offlist_entry_free(struct cfsd_inode_chunk *c, u8 ndx)
+{
+    c->hdr.off_list[ndx] = OFFSET_UNUSED;
+}
+
+/* 
+CHUNK FREELIST CODE 
+====================================================================================== 
+*/ 
 /** 
  * Initialise chunk's freelist by setting every entry to free. 
  * @param c the chunk under initialisation 
@@ -71,45 +144,6 @@ static int __flist_entry_alloc(u64 *ret_ndx, struct cfsd_inode_chunk *c)
     BUG();
 }
 
-/**
- * Allocate a new chunk 
- * @return NULL on failure, otherwise a zero'ed chunk. 
- */
-void *cfsc_chunk_alloc()
-{
-    return kmem_cache_zalloc(chunk_pool, GFP_KERNEL);
-}
-
-/**
- * Free chunk.
- * @param c the chunk to free
- */
-void cfsc_chunk_free(struct cfsd_inode_chunk *c)
-{
-    kmem_cache_free(chunk_pool, c);
-}
-
-/**
- * Finds an empty slot in the chunk and inserts the entry.
- * @param c the chunk into which the entry is inserted
- * @param e the entry to insert 
- * @return 0 on success; -1 if the chunk is full 
- * @note you may have to sort the chunk entries 
- */
-int cfsc_chunk_insert_entry(u64 *ret_ndx, struct cfsd_inode_chunk *c, struct cfsd_ientry const *e)
-{
-    int retval = 0;
-    if ((retval=__flist_entry_alloc(ret_ndx, c))) {
-        CFS_DBG("__flist_entry_alloc err, retval: %d\n", retval);
-        goto out;
-    }
-
-    c->entries[*ret_ndx] = *e;
-    c->hdr.entries_free--;
-out:
-    return retval;
-}
-
 /** 
  * Marks ientry as being free. 
  * @param c the chunk in which the entry resides 
@@ -125,19 +159,10 @@ static __always_inline void __flist_entry_free(struct cfsd_inode_chunk *c, u8 nd
     c->hdr.freelist[ndx/8] &= bm; /*apply mask to clear bit*/
 }
 
-/** 
- * Sets chunk values that of a completely empty tail-end chunk 
- * @param c chunk to modify 
- * @param entire chunk has been zero'ed out 
- */ 
-void cfsc_chunk_init_common(struct cfsd_inode_chunk *c)
-{
-    CLYDE_ASSERT(c != NULL);
-    c->hdr.entries_free = CHUNK_NUMENTRIES;
-    c->hdr.last_chunk = 1;
-    __flist_init(c); /*set each bit to 1 to mark empty slots*/
-}
-
+/* 
+SEARCH CODE 
+====================================================================================== 
+*/ 
 static int ientry_cmp(struct cfsd_ientry const *v1, struct cfsd_ientry const *v2)
 {
     /* comparator for inode entry bsearch & sort
@@ -154,47 +179,6 @@ static __always_inline void chunk_mk_key(struct cfsd_ientry *search_key, struct 
     strncpy(search_key->name, d->d_name.name, search_key->nlen); /*FIXME - */
 }
 
-#if 0
-int bsearch(u64 *ret_ndx, const void *key, const void *base, u64 num, u64 size,
-	      int (*cmp)(const void *key, const void *elt))
-{
-	u64 start = 0, end = num, mid = 0;
-	int result;
-
-	while (start < end) {
-		mid = start + (end - start) / 2;
-
-		result = cmp(key, base + mid * size);
-		if (result < 0)
-			end = mid;
-		else if (result > 0)
-			start = mid + 1;
-		else {
-            *ret_ndx = mid; /*index of entry*/
-			return FOUND;
-        }
-	}
-    /*search aborted, the element should have been either 
-      immediately before or immediately after this one*/
-    *ret_ndx = mid;
-	return NOT_FOUND;
-}
- 
-static __always_inline int chunk_lookup(
-    u64 *ret_ndx, 
-    struct cfsd_inode_chunk const * const c,
-    u64 num_elems,
-    struct cfsd_ientry const * const search_key)
-{
-    /*wraps the actual search and provides some type-checking*/
-    return bsearch(
-        ret_ndx, search_key, c, 
-        num_elems, sizeof(struct cfsd_ientry), 
-        ientry_cmp
-    );
-}
-#endif
-
 static int chunk_lookup(
     /*inspired by kernel's bsearch @ linux/bsearch.h */
     u64 *ret_ndx, 
@@ -207,21 +191,167 @@ static int chunk_lookup(
 
     while (start < end) {
         mid = start + (end-start) / 2;
-
-        result = ientry_cmp(search_key, &c->entries[c->hdr.freelist[mid]]);
+        
+        result = ientry_cmp(search_key, &c->entries[c->hdr.off_list[mid]]);
         if (result < 0) {
             end = mid;
         } else if (result > 0) {
             start = mid + 1;
         } else {
-            *ret_ndx = c->hdr.freelist[mid]; /*index of entry*/
+            *ret_ndx = c->hdr.off_list[mid]; /*index of entry*/
             return FOUND;
         }
     }
     /*search aborted*/
 	return NOT_FOUND;
 }
-                                           
+
+/* 
+SORT CODE 
+====================================================================================== 
+*/ 
+static void offset_swap(void *a, void *b)
+{ /*adopted from u32_swap in the kernel*/
+	u8 t = *(u8 *)a;
+	*(u8 *)a = *(u8 *)b;
+	*(u8 *)b = t;
+}
+static int ientry_cmp_sort(struct cfsd_ientry *entry_base, void const *e1_off, void const *e2_off)
+{
+    struct cfsd_ientry const *v1 = entry_base + (*(u8*)e1_off);
+    struct cfsd_ientry const *v2 = entry_base + (*(u8*)e2_off);
+
+    return strcmp(v1->name, v2->name);
+}
+
+static void hsort(void *base, size_t num, size_t size,
+	  struct cfsd_ientry *entry_base)
+      /*essentially from include/sort.h - had to modify comparison function 
+        to work off a different offset*/
+{
+	/* pre-scale counters for performance */
+	int i = (num/2 - 1) * size, n = num * size, c, r;
+
+	/* heapify */
+	for ( ; i >= 0; i -= size) {
+		for (r = i; r * 2 + size < n; r  = c) {
+			c = r * 2 + size;
+			if (c < n - size &&
+					ientry_cmp_sort(entry_base, base + c, base + c + size) < 0)
+				c += size;
+			if (ientry_cmp_sort(entry_base, base + r, base + c) >= 0)
+				break;
+            offset_swap(base + r, base + c);
+		}
+	}
+
+	/* sort */
+	for (i = n - size; i > 0; i -= size) {
+		offset_swap(base, base + i);
+		for (r = 0; r * 2 + size < i; r = c) {
+			c = r * 2 + size;
+			if (c < i - size &&
+					ientry_cmp_sort(entry_base, base + c, base + c + size) < 0)
+				c += size;
+			if (ientry_cmp_sort(entry_base, base + r, base + c) >= 0)
+				break;
+			offset_swap(base + r, base + c);
+		}
+	}
+}
+
+/* 
+CHUNK INTERFACE CODE 
+====================================================================================== 
+*/ 
+/**
+ * Allocate a new chunk 
+ * @return NULL on failure, otherwise a zero'ed chunk. 
+ */
+void *cfsc_chunk_alloc()
+{
+    return kmem_cache_zalloc(chunk_pool, GFP_KERNEL);
+}
+
+/** 
+ * Sets chunk values that of a completely empty tail-end chunk 
+ * @param c chunk to modify 
+ * @param entire chunk has been zero'ed out 
+ */ 
+void cfsc_chunk_init(struct cfsd_inode_chunk *c)
+{
+    CLYDE_ASSERT(c != NULL);
+    c->hdr.entries_free = CHUNK_NUMENTRIES;
+    c->hdr.last_chunk = 1;
+    __flist_init(c); /*set each bit to 1 to mark empty slots*/
+    __offlist_init(c); /*set each offset value such that it is marked unused*/
+} 
+
+/**
+ * Free chunk.
+ * @param c the chunk to free
+ */
+void cfsc_chunk_free(struct cfsd_inode_chunk *c)
+{
+    kmem_cache_free(chunk_pool, c);
+}
+
+/**
+ * Sort chunk inode entries.
+ * @param c the chunk whose inode entries to sort. 
+ */
+void cfsc_chunk_sort(struct cfsd_inode_chunk *c)
+{
+    CLYDE_ASSERT(c != NULL);
+    hsort(
+        /*sort off_list, which is a list of u8 offsets into c->entries*/
+        c->hdr.off_list, 
+        CHUNK_NUM_ITEMS(c), 
+        sizeof(u8),
+        /*comparisons, the basis of the sort, are made by using the offset 
+          values to compute the actual ientry location and doing a str
+          comparison on their names*/ 
+        c->entries
+    );
+}
+
+/**
+ * Finds an empty slot in the chunk and inserts the entry.
+ * @param c the chunk into which the entry is inserted
+ * @param e the entry to insert 
+ * @return 0 on success; -1 if the chunk is full 
+ * @note you may have to sort the chunk entries 
+ * @pre should have exclusive access to the chunk 
+ */
+int cfsc_chunk_entry_insert(u64 *ret_ndx, struct cfsd_inode_chunk *c, struct cfsd_ientry const *e)
+{
+    int retval = 0;
+    if ((retval=__flist_entry_alloc(ret_ndx, c))) {
+        CFS_DBG("__flist_entry_alloc err, retval: %d\n", retval);
+        goto out;
+    }
+
+    c->entries[*ret_ndx] = *e;
+    c->hdr.entries_free--;
+out:
+    return retval;
+}
+
+/** 
+ * Delete entry from chunk and update administrative fields to 
+ * reflect it. 
+ * @param c the chunk in which to remove the element 
+ * @param entry_ndx the offset of the ientry to remove within 
+ *                  the chunk.
+ * @pre should have exclusive access to the chunk 
+ * @note remember to sort after deletions 
+ */ 
+void cfsc_chunk_entry_delete(struct cfsd_inode_chunk *c, u8 entry_ndx)
+{
+    __flist_entry_free(c, entry_ndx);
+    __offlist_entry_free(c, entry_ndx);
+    c->hdr.entries_free++;
+}
 
 /** 
  *  Find entry with name given by 'ientry_d' inside parent
@@ -243,6 +373,7 @@ static int chunk_lookup(
  *  @post on success; *ret_buf holds the chunk in which the
  *        entry was found, *ret_entry points to the entry inside
  *        the chunk which matched the search key.
+ *  @note acquires parent's write locks while reading chunks in.
  */ 
 int __must_check cfsc_ientry_find(
     struct cfsd_inode_chunk *ret_buf, struct ientry_loc *ret_loc, 
@@ -270,7 +401,7 @@ int __must_check cfsc_ientry_find(
     chunk_mk_key(&search_key, search_dentry);
 
 read_chunk:
-    spin_lock(&parent->io_lock);
+    cfsi_i_wlock(parent);
     retval = cfsio_read_node_sync(
         bd, NULL, NULL,
         itbl->tid, itbl->nid, 
@@ -278,7 +409,7 @@ read_chunk:
         sizeof(struct cfsd_inode_chunk), 
         ret_buf
     );
-    spin_unlock(&parent->io_lock);
+    cfsi_i_wunlock(parent);
     if (retval) {
         retval = -EIO;
         goto err_io;
@@ -318,16 +449,16 @@ out:
  *      itbl
  */
 static int cfs_mk_chunk(struct block_device *bd, struct cfs_node_addr *itbl, u64 off)
-{
+{ /*FIXME unused*/
     struct cfsd_inode_chunk *c = NULL;
     int retval;
 
-    c = kmem_cache_zalloc(chunk_pool, GFP_KERNEL);
+    c = cfsc_chunk_alloc();
     if (!c) {
         retval = -ENOMEM;
         goto out;
     }
-    cfsc_chunk_init_common(c);
+    cfsc_chunk_init(c);
 
     retval = cfsio_update_node_sync(
         bd, NULL, NULL, 
@@ -341,12 +472,46 @@ static int cfs_mk_chunk(struct block_device *bd, struct cfs_node_addr *itbl, u64
 
     goto out; /*success*/
 err_write:
-    kmem_cache_free(chunk_pool, c);
+    cfsc_chunk_free(c);
 out:
     return retval;
 }
 
-#if 0
+/**Fully populate an ientry for in preparation for writing it 
+ * to disk based on the inode's own data and referenced dentry.
+ * @param dst the ientry to populate 
+ * @param src the inode from which to source metadata 
+ * @param  
+ * @return 0 on success, -ENAMETOOLONG if the name exceeds the 
+ *         filesystem maximum name length.
+ * @pre src is a fully initialised inode with an associated 
+ *      dentry.
+ */ 
+static __always_inline int cfs_ientry_init(
+    struct cfsd_ientry *dst, 
+    struct cfs_inode const * const src,
+    struct dentry const * const src_d)
+{
+    struct inode const *i = NULL;
+
+    CLYDE_ASSERT(dst != NULL);
+    CLYDE_ASSERT(src != NULL);
+    CLYDE_ASSERT(src_d != NULL);
+
+    i = &src->vfs_inode;
+    CLYDE_ASSERT(i != NULL);
+
+    /*handle metadata*/
+    __copy2d_inode(dst,src);
+    if (src_d->d_name.len > CFS_NAME_LEN) {
+        return -ENAMETOOLONG;
+    }
+    strncpy(dst->name, src_d->d_name.name, src_d->d_name.len);
+    dst->nlen = cpu_to_le16((u16)src_d->d_name.len);
+
+    return 0; /*success*/
+}
+
 /** 
  * Insert a new inode entry (corresponding to a file or 
  * directory) into the inode table of the parent directory. 
@@ -355,18 +520,18 @@ out:
  *               and 'inode_d'
  * @param inode the metadata of the new inode entry 
  * @param inode_d the name of the new inode entry 
- * @pre parent's i_lock is locked 
+ * @pre NO LOCKS TAKEN
  * @return 0 on sucess; error otherwise 
  *  -ENOMEM -- allocations failed
  *  -EIO -- error while reading chunks in parent inode table or
  *   persisting a chunk, existing or newly appended.
- */ 
-int __ientry_insert(struct cfs_inode *parent, struct cfs_inode *inode, struct dentry *inode_d)
+ */
+int cfsc_ientry_insert(struct cfs_inode *parent, struct cfs_inode *inode, struct dentry *inode_d)
 {
     struct cfsd_inode_chunk *chunk_curr = NULL;         /*ptr to chunk memory*/
     struct cfs_node_addr *itbl = NULL;                  /*reference to parent's inode table*/
     struct block_device *bd = NULL;                     /*block device to operate on*/
-    u64 off;
+    u64 off, ientry_ndx=0;
     struct cfsd_ientry tmp_ientry;
     int retval;
 
@@ -375,54 +540,53 @@ int __ientry_insert(struct cfs_inode *parent, struct cfs_inode *inode, struct de
     CLYDE_ASSERT(inode_d != NULL);
     CLYDE_ASSERT( spin_is_locked(&parent->vfs_inode.i_lock) );
 
-    chunk_curr = kmem_cache_alloc(chunk_pool, GFP_KERNEL);
+    chunk_curr = cfsc_chunk_alloc();
     if (!chunk_curr) {
         retval = -ENOMEM;
         goto err;
     }
-
+    
     itbl = &parent->data;
     bd = parent->vfs_inode.i_sb->s_bdev;
     CLYDE_ASSERT(bd != NULL);
-    off = CHUNK_LEAD_SLACK_BYTES;
+    off = 0;
 
     /*populate structure for writing*/
     cfs_ientry_init(&tmp_ientry, inode, inode_d);
+    cfsi_i_wlock(parent);
 
 read_chunk:
     retval = cfsio_read_node_sync(
         bd, NULL, NULL,
         itbl->tid, itbl->nid, 
         off, 
-        sizeof(struct cfsd_inode_chunk), 
+        CHUNK_SIZE_BYTES, 
         chunk_curr
     );
     if (retval) {
-        CLYDE_ERR("failed to read inode entry!\n");
+        CLYDE_ERR("failed to read itbl chunk!\n");
         retval = -EIO;
         goto out;
     }
 
-    if (chunk_curr->entries_used < CHUNK_NUMENTRIES) {
+    if (chunk_curr->hdr.entries_free) {
         /*space available in chunk*/
-        chunk_curr->entries[chunk_curr->entries_used++] = tmp_ientry;
-        
-        sort(
-            chunk_curr->entries, 
-            chunk_curr->entries_used, 
-            sizeof(struct cfsd_ientry), 
-            ientry_cmp, NULL /*swap fnc => NULL, generic byte-by-byte swap used*/
-        );
+        if (cfsc_chunk_entry_insert(&ientry_ndx, chunk_curr, &tmp_ientry)) {
+            CFS_DBG("entries_free wasn't 0 at the time of checking, this code should be protected against race conditions\n");
+            BUG();
+        }
+        cfsc_chunk_sort(chunk_curr);
 
-        if (chunk_curr->entries_used == CHUNK_NUMENTRIES) {
+        if (chunk_curr->hdr.entries_free == 0) {
             /*last entry in chunk, append inode table with a new 
               chunk and mark this chunk as no longer being the last one*/
-            chunk_curr->last_chunk = 0;
-            retval = cfs_mk_chunk(bd,itbl,off);
+            retval = cfs_mk_chunk(bd,itbl, off + CHUNK_SIZE_DISK_BYTES);
             if (retval) {
                 /*failed to append a new chunk to the now filled chunk, abort*/
                 goto out;
             }
+
+            chunk_curr->hdr.last_chunk = 0;
         }
 
         retval = cfsio_update_node_sync(
@@ -436,35 +600,183 @@ read_chunk:
             retval = -EIO;
             goto out;
         }
+        /*SUCCESS: fall out*/
     } else {
-        if (!chunk_curr->last_chunk) {
+        if (!chunk_curr->hdr.last_chunk) {
+            off += CHUNK_SIZE_DISK_BYTES;
             goto read_chunk;
         }
     }
 
     retval = 0; /*fall through*/
 out:
+    cfsi_i_wunlock(parent);
     kmem_cache_free(chunk_pool, chunk_curr);
 err:
     return retval;
 }
-#endif
 
-/** 
- * Wrapper for __ientry_insert 
- */
-int cfsc_ientry_insert(struct cfs_inode *parent, struct cfs_inode *inode, struct dentry *inode_d)
+int cfsc_ientry_update(struct cfs_inode *parent, struct cfs_inode *ci)
 {
-    CLYDE_ASSERT( 1 == 2 ); //force bug
-    #if 0
-    int retval;
-    CLYDE_ASSERT( !spin_is_locked(&parent->vfs_inode.i_lock) );
+    struct cfsd_inode_chunk *c = NULL;
+    struct cfsd_ientry *entry = NULL;
+    struct block_device *bd = NULL;
 
-    spin_lock( &parent->vfs_inode.i_lock );
-    retval = __ientry_insert(parent, inode, inode_d);
-    spin_unlock( &parent->vfs_inode.i_lock );
+    int retval = 0;
+
+    CLYDE_ASSERT(parent != NULL);
+    /*parent must have an itbl*/
+    CLYDE_ASSERT(parent->vfs_inode.i_mode & S_IFDIR);
+    CLYDE_ASSERT(ci != NULL);
+    /*require inode to be associated to its dentry*/
+    CLYDE_ASSERT(ci->itbl_dentry != NULL);
+    /*require inodes to be fully initialised*/
+    CLYDE_ASSERT(ci->status != IS_UNINITIALISED);
+    /*can only update an entry already on disk, after all*/
+    CLYDE_ASSERT(ci->on_disk);
+
+    bd = parent->vfs_inode.i_bdev;
+
+    c = cfsc_chunk_alloc();
+    if (!c) {
+        CFS_DBG("Failed to allocate chunk\n");
+        retval = -ENOMEM;
+        goto err_alloc;
+    }
+
+    cfsi_i_wlock(parent);
+    retval = __read_chunk_sync(
+        bd, ci->data.tid, ci->data.nid, 
+        c, ci->dsk_ientry_loc.chunk_off
+    );
+    if (retval) {
+        CFS_DBG("Failed to read the specified chunk in which the entry resides\n");
+        retval = -EIO;
+        goto err_io;
+    }
+
+    /*Update ientry*/
+    entry = &c->entries[ci->dsk_ientry_loc.chunk_off];
+    __copy2d_inode(entry, ci);
+    if (ci->sort_on_update) {
+        struct dentry *d = ci->itbl_dentry;
+
+        /*changes requiring re-sorting elements can only be changing the inode name*/
+        if (d->d_name.len > CFS_NAME_LEN) {
+            return -ENAMETOOLONG;
+        }
+        strncpy(entry->name, d->d_name.name, d->d_name.len);
+        entry->nlen = cpu_to_le16((u16)d->d_name.len);
+
+        cfsc_chunk_sort(c);
+    }
+
+    /*write the updated entry back to disk*/
+    retval = cfsio_update_node(
+        bd, NULL, NULL, 
+        ci->data.tid, ci->data.nid, 
+        __entry_offset(ci->dsk_ientry_loc.chunk_off), 
+        sizeof(entry), 
+        entry
+    );
+    if (retval) {
+        CFS_DBG("Failed to write entry down to chunk\n");
+        retval = -EIO;
+        goto err_io;
+    }
+    /*write the chunk hdr back to disk*/
+    retval = __write_chunk_hdr_sync(bd, c, &ci->data, ci->dsk_ientry_loc.chunk_off);
+    if (retval) {
+        CFS_DBG("Failed to chunk hdr after changing its contents\n");
+        BUG();
+    }
+    /*success, fall through*/
+err_io:
+    cfsi_i_wunlock(parent);
+err_alloc:
     return retval;
-    #endif
+}
+
+int cfsc_ientry_delete(struct cfs_inode *parent, struct cfs_inode *ci)
+{
+    struct cfsd_inode_chunk *c = NULL;
+    struct block_device *bd = NULL;
+
+    int retval = 0;
+
+    CLYDE_ASSERT(parent != NULL);
+    /*parent must have an itbl*/
+    CLYDE_ASSERT(parent->vfs_inode.i_mode & S_IFDIR);
+    CLYDE_ASSERT(ci != NULL);
+    /*require inode to be associated to its dentry*/
+    CLYDE_ASSERT(ci->itbl_dentry != NULL);
+    /*require inodes to be fully initialised*/
+    CLYDE_ASSERT(ci->status != IS_UNINITIALISED);
+    /*can only update an entry already on disk, after all*/
+    CLYDE_ASSERT(ci->on_disk);
+
+    bd = parent->vfs_inode.i_bdev;
+
+    c = cfsc_chunk_alloc();
+    if (!c) {
+        CFS_DBG("Failed to allocate chunk\n");
+        retval = -ENOMEM;
+        goto err_alloc;
+    }
+
+    cfsi_i_wlock(parent);
+    retval = __read_chunk_sync(
+        bd, ci->data.tid, ci->data.nid, 
+        c, ci->dsk_ientry_loc.chunk_off
+    );
+    if (retval) {
+        CFS_DBG("Failed to read the specified chunk in which the entry resides\n");
+        retval = -EIO;
+        goto err_io;
+    }
+
+    /*remove ientry*/
+    CLYDE_ASSERT( ((u8)255U) >= (u8)ci->dsk_ientry_loc.chunk_off); /*FIXME remove*/
+    cfsc_chunk_entry_delete(c, ci->dsk_ientry_loc.chunk_off);
+    cfsc_chunk_sort(c);
+
+    /*write the chunk hdr back to disk*/
+    retval = __write_chunk_hdr_sync(bd, c, &ci->data, ci->dsk_ientry_loc.chunk_off);
+    if (retval) {
+        CFS_DBG("Failed to chunk hdr after changing its contents\n");
+        BUG();
+    }
+    /*success, fall through*/
+err_io:
+    cfsi_i_wunlock(parent);
+err_alloc:
+    return retval;
+}
+
+/* 
+Wrappers & helpers
+====================================================================================== 
+*/
+/**
+ * Allocate node for an inode table.
+ * @post on success; ret_itbl_nid will be set to the node id of the newly allocated node
+ * @return 0 on success, negative on io errors 
+ */
+int cfsc_mk_itbl_node(u64 *ret_itbl_nid, struct block_device *bd, u64 tid)
+{
+    return cfsio_insert_node_sync(
+        bd, ret_itbl_nid, tid, CHUNK_SIZE_DISK_BYTES
+    );
+}
+
+int cfsc_write_chunk_sync(struct block_device *bd, u64 tid, u64 nid, struct cfsd_inode_chunk *c, int chunk_off) 
+{
+    return __write_chunk_sync(bd, tid, nid, c, chunk_off);
+}
+
+int cfsc_read_chunk_sync(struct block_device *bd, u64 tid, u64 nid, struct cfsd_inode_chunk *c, int chunk_off)
+{
+    return __read_chunk_sync(bd, tid, nid, c, chunk_off);
 }
 
 int cfsc_init(void)
