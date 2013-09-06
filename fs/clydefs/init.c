@@ -3,6 +3,7 @@
 #include <linux/init.h>
 #include "super.h"
 #include "io.h"
+#include "chunk.h"
 #include "inode.h"
 #include "sysfs.h"
 
@@ -39,6 +40,11 @@ static int __init clydefs_init(void)
     if (retval)
         goto err;
 
+    /*init chunk module*/
+    retval = cfsc_init();
+    if (retval)
+        goto err_chunk_init;
+
     /*init inode module*/
     retval = cfsi_init();
     if (retval)
@@ -61,6 +67,8 @@ err_cfssys_init:
 err_super_init:
     cfsi_exit();
 err_inode_init:
+    cfsc_exit();
+err_chunk_init:
     cfsio_exit();
 err:
     return retval;
@@ -71,6 +79,7 @@ static void __exit clydefs_exit(void)
     cfssys_exit();
     super_exit();
     cfsi_exit();
+    cfsc_exit();
     cfsio_exit();
 }
 

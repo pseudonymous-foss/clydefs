@@ -4,6 +4,7 @@
 #include "clydefs.h"
 #include "clydefs_disk.h"
 #include "io.h"
+#include "chunk.h"
 
 extern void __print_disk_sb(struct cfsd_sb *dsb);
 /** 
@@ -165,8 +166,8 @@ err_mk_sb_tbl:
 static __always_inline int cfs_mk_fs_itbl(u64 *ret_fs_itbl_nid, struct block_device *bd, u64 inode_tree_tid)
 {
     struct cfsd_inode_chunk *chunk = NULL;
-    struct cfsd_ientry *root_entry = NULL;
-    u64 root_itbl_nid, fs_itbl_nid;
+    struct cfsd_ientry root_entry;
+    u64 root_itbl_nid, fs_itbl_nid, root_entry_ndx = 0;
     int retval;
 
     printk("%s called\n", __FUNCTION__);
@@ -179,29 +180,24 @@ static __always_inline int cfs_mk_fs_itbl(u64 *ret_fs_itbl_nid, struct block_dev
         retval = -ENOMEM;
         goto err_alloc_chunk;
     }
+    cfsc_chunk_init_common(chunk);
 
     /*create and write the empty root inode table chunk*/
     retval = cfsio_insert_node_sync(
-        bd, &root_itbl_nid, inode_tree_tid, sizeof(struct cfsd_inode_chunk)
+        bd, &root_itbl_nid, inode_tree_tid, CHUNK_SIZE_DISK_BYTES
     );
     if (retval) {
         CLYDE_ERR("Failed to create node for root's inode table in inode tree (tid:%llu)\n", inode_tree_tid);
         goto err_mk_root_itbl;
     }
-    chunk->last_chunk = 1;
-    retval = cfsio_update_node_sync(
-        bd, NULL, NULL, inode_tree_tid, root_itbl_nid, 
-        CHUNK_LEAD_SLACK_BYTES, sizeof(struct cfsd_inode_chunk), chunk
-    );
+    cfsc_chunk_init_common(chunk);
+    retval = cfsc_write_chunk_sync(bd, inode_tree_tid, root_itbl_nid, chunk, 0);
     if (retval) {
         CLYDE_ERR("Failed to write contents of root's inode table in inode tree (tid:%llu,nid:%llu)\n", inode_tree_tid, root_itbl_nid);
         goto err_mk_root_itbl_write;
     }
 
-    /*Adjust chunk buffer - and begin creating the FS inode table with the root entry.*/
-    root_entry = &chunk->entries[0];
-    chunk->entries_used = 1;
-    chunk->last_chunk = 1;
+    /*create the FS inode table*/
     retval = cfsio_insert_node_sync(
         bd, &fs_itbl_nid, inode_tree_tid, sizeof(struct cfsd_inode_chunk)
     );
@@ -211,24 +207,30 @@ static __always_inline int cfs_mk_fs_itbl(u64 *ret_fs_itbl_nid, struct block_dev
     }
 
     /*set up root inode entry and write it to the fs inode table*/
-    root_entry->ino = cpu_to_le64(CFS_INO_ROOT);
-    root_entry->uid = 0;
-    root_entry->gid = 0;
-    root_entry->ctime = root_entry->mtime = cpu_to_le64( get_seconds() );
+    root_entry.ino = cpu_to_le64(CFS_INO_ROOT);
+    root_entry.uid = 0;
+    root_entry.gid = 0;
+    root_entry.ctime = root_entry.mtime = cpu_to_le64( get_seconds() );
     /*all inodes start with just one chunk*/
-    root_entry->size_bytes = cpu_to_le64(CHUNK_LEAD_SLACK_BYTES + sizeof(struct cfsd_inode_chunk));
-    root_entry->data_nid = cpu_to_le64(inode_tree_tid);
-    root_entry->icount = 0;
-    root_entry->mode = cpu_to_le16(S_IFDIR | 0755);
-    strcpy(root_entry->name, "/");
-    root_entry->nlen = strlen(root_entry->name);
+    root_entry.size_bytes = cpu_to_le64(CHUNK_SIZE_DISK_BYTES);
+    root_entry.data_nid = cpu_to_le64(inode_tree_tid);
+    root_entry.icount = 0;
+    root_entry.mode = cpu_to_le16(S_IFDIR | 0755);
+    strcpy(root_entry.name, "/");
+    root_entry.nlen = strlen(root_entry.name);
+
+    if ( cfsc_chunk_insert_entry(&root_entry_ndx, chunk, &root_entry) ){
+        /*we cannot fail inserting into an empty chunk, must be a programming error*/
+        CFS_DBG("Failed inserting root_entry into newly allocated, empty chunk\n");
+        BUG();
+    }
+    if (root_entry_ndx != 0) {
+        CFS_DBG("root entry must be written to the first entry, by convention - programming error!\n");
+        BUG();
+    }
 
     smp_mb();
-    retval = cfsio_update_node_sync(
-        bd, NULL, NULL, 
-        inode_tree_tid, fs_itbl_nid, 
-        CHUNK_LEAD_SLACK_BYTES, sizeof(struct cfsd_inode_chunk), chunk
-    );
+    retval = cfsc_write_chunk_sync(bd, inode_tree_tid, fs_itbl_nid, chunk, 0);
     smp_mb();
     if (retval) {
         CLYDE_ERR("Failed to write contents to fs inode table (tid:%llu, nid:%llu) (retval:%d)\n", inode_tree_tid, fs_itbl_nid, retval);
@@ -236,7 +238,7 @@ static __always_inline int cfs_mk_fs_itbl(u64 *ret_fs_itbl_nid, struct block_dev
     }
 
     *ret_fs_itbl_nid = fs_itbl_nid; /*return nid of the fs inode table*/
-    kfree(root_entry);
+    kfree(chunk);
     return 0; /*success*/
 
 err_mk_fs_itbl_write:

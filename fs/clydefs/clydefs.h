@@ -43,9 +43,6 @@
  * 8b/entry) */ 
 #define RECLAIM_INO_MAX 131072ULL
 
-#define CHUNK_NUMENTRIES 105U
-#define CHUNK_LEAD_SLACK_BYTES 6U
-
 struct cfs_node_addr {
     u64 tid;
     u64 nid;
@@ -104,6 +101,7 @@ struct ientry_loc
     u64 chunk_off;
 };
 
+enum CFSI_TYPE { IT_UNINITIALISED = 0, IT_FILE, IT_DIR };
 /** 
  * clydefs inode structure 
  */
@@ -113,6 +111,10 @@ struct cfs_inode {
     /**true if the inode has been persisted or was loaded from 
      * disk, only look at dsk_* vars if this is set   */
     u8 on_disk;
+
+    /**if initialised via cfs_inode_init[_new] functions, this is 
+     * set. Guarantees everything but dsk_* vars are initialised. */ 
+    enum CFSI_TYPE status;
 
     /**Location of where the ientry of this inode is located 
      * within the inode table of the parent directory. */ 
@@ -131,6 +133,10 @@ struct cfs_inode {
      * tree. For files this points to the node in the file tree 
      * containing its data */ 
     struct cfs_node_addr data;
+
+    /**Disk lock, must be acquired while reading a chunk off disk 
+     * or while performing a write operation */ 
+    spinlock_t io_lock;
 };
 
 

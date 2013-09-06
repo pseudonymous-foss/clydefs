@@ -13,6 +13,7 @@
 
 
 
+
 static struct dentry *cfs_mount(struct file_system_type *fs_type, int flags,
                              const char *device_path, void *data);
 static int cfs_fill_super(struct super_block *sb, void *data, int silent);
@@ -183,10 +184,13 @@ int cfs_drop_inode(struct inode *i)
     /*documentation says i_lock is already held*/
     struct cfs_inode *ci = NULL;
     ci = CFS_INODE(i);
-    if (ci->parent != NULL) {
-        /*parent inode was assigned, decrement its reference*/
-        iput(&ci->parent->vfs_inode); /*no lock needed*/
-        ci->parent = NULL;
+    if (ci->status != IT_UNINITIALISED) {
+        if (ci->parent != NULL) {
+            /*parent inode was assigned, decrement its reference*/
+            iput(&ci->parent->vfs_inode); /*no lock needed*/
+            ci->parent = NULL;
+        }
+        ci->status = IT_UNINITIALISED;
     }
     /*forward to default implementation*/
     /*FIXME - not entirely sure the generic function always drops an inode*/

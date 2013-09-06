@@ -13,7 +13,7 @@ ifneq ($(KERNELRELEASE),)
 	
 	obj-$(CONFIG_CLYDEFS_FS) := clydefs.o
 	
-	clydefs-y += init.o super.o file.o inode.o io.o sysfs.o mkfs.o pagecache.o
+	clydefs-y += init.o super.o file.o inode.o io.o sysfs.o mkfs.o pagecache.o chunk.o
 
 	#debugging build
 	ifneq ($(CONFIG_CLYDEFS_DEBUG),)

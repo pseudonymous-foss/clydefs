@@ -1,10 +1,17 @@
 #ifndef __CLYDEFS_DISK
 #define __CLYDEFS_DISK
 #include "clydefs.h"
-
 /*
 Holds various structures as they appear when persisted to disk
 */
+
+/**number of entries in a chunk*/
+#define CHUNK_NUMENTRIES 104U
+/**number of bytes to represent freelist, MOD(NUM_ENTRIES;8) 
+ * must equal 8 as the code expects each bit to be in use */ 
+#define CHUNK_FREELIST_BYTES 13
+/**Marks the number of unused tail-end bytes of each chunk */
+#define CHUNK_TAIL_SLACK_BYTES 201U
 
 /**On-disk structure of a [c,m,a]time field*/
 typedef __le64 cfsd_time_t; /*64bit suffices as we aim only to track time at a per-second granularity*/
@@ -143,12 +150,32 @@ static __always_inline void __copy2d_timespec(__le64 *dst, struct timespec const
     *dst = cpu_to_le64(src->tv_sec);
 }
 
+struct cfsd_chunk_hdr {
+    /**freelist, if set, the entry is free, if not, the entry is 
+     * taken */ 
+    u8 freelist[CHUNK_FREELIST_BYTES];
+
+    /**a list of offsets into the ientry list sorted such that 
+     * reading the entries the offsets point to yields 
+     * alphabetical order */ 
+    u8 off_list[CHUNK_NUMENTRIES];
+
+    /**marks how many entries are still free, if 0, chunk is 
+     * fully booked */ 
+    u8 entries_free;
+    /**set iff this chunk is the last in the itbl*/ 
+    u8 last_chunk;
+};
+
 /**The size and layout of an inode chunk*/ 
 struct cfsd_inode_chunk {
-    /*u8 slack[CHUNK_LEAD_SLACK_BYTES]; -- skipped in inode.c code*/
-    u8 entries_used;
-    u8 last_chunk;
+    /*place entries in the lead to guarantee alignment 
+      regardless of header sizes*/
+
+    /**the inode entries of the chunk */ 
     struct cfsd_ientry entries[CHUNK_NUMENTRIES];
+    /**the chunk's heeader */ 
+    struct cfsd_chunk_hdr hdr;
 };
 
 #endif /*__CLYDEFS_DISK*/
