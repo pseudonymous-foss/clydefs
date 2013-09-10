@@ -11,6 +11,10 @@
  * next. */ 
 #define CHUNK_SIZE_DISK_BYTES (CHUNK_SIZE_BYTES + CHUNK_TAIL_SLACK_BYTES)
 
+/**Value indicating an unused offset, must be higher than the 
+ * number of entries possible to have in a chunk */ 
+#define OFFSET_UNUSED 0b11111111U
+
 enum CHUNK_LOOKUP_RES { FOUND = 0, NOT_FOUND = 1 };
 
 

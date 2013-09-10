@@ -2,6 +2,8 @@
 #include <linux/kernel.h>
 
 extern TestRef io_tests(TestCaller *test);
+extern TestRef chunk_tests(TestCaller *test);
+
 extern char *dbg_dev;
 /* 
  * function referenced by embUnit, but never implemented. 
@@ -28,7 +30,8 @@ int tests_init(void)
 
     if (dbg_dev) {
         static TestCaller test;
-        run_test(io_tests(&test), "io_tests");       
+        /*run_test(io_tests(&test), "io_tests");*/
+        run_test(chunk_tests(&test), "chunk_tests");       
         TestRunner_end();
     } else {
         printk("ERROR: dbg_dev not supplied when loading the module, no device to test against!\n");

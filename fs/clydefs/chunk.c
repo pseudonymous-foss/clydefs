@@ -6,9 +6,7 @@
 static struct kmem_cache *chunk_pool = NULL;
 
 #define CHUNK_NUM_ITEMS(c) (CHUNK_NUMENTRIES - (c)->hdr.entries_free)
-/**Value indicating an unused offset, must be higher than the 
- * number of entries possible to have in a chunk */ 
-#define OFFSET_UNUSED 0b11111111U
+
 
 static __always_inline int __write_chunk_sync(struct block_device *bd, u64 tid, u64 nid, struct cfsd_inode_chunk *c, int chunk_off) 
 {
@@ -128,13 +126,13 @@ static int __flist_entry_alloc(u64 *ret_ndx, struct cfsd_inode_chunk *c)
             while(j < 8) { /*j [0;7]*/
                 if (v & sv) {
                     /*found a free entry!*/
-                    freelist[i] |= sv; /*reserve it*/
+                    freelist[i] &= ~sv; /*reserve it (swap pattern to ensure we write a zero @ the spot to reserve)*/
                     /*each b holds 8 entries, hence i*8, j is the index of the entry in the byte*/
                     *ret_ndx = (i*8)+j;
                     return 0;
                 }
                 /*try next index instead*/
-                sv = 1 << ++j;
+                sv = 1U << ++j;
             }
             CFS_DBG("Determined a free entry was in a byte, yet couldn't find it!\n");
             BUG();
@@ -152,11 +150,13 @@ static int __flist_entry_alloc(u64 *ret_ndx, struct cfsd_inode_chunk *c)
  */
 static __always_inline void __flist_entry_free(struct cfsd_inode_chunk *c, u8 ndx)
 { /*free the entry by zeroing out the bit @ the ndx'th entry in the freelist */ 
-    u8 bm;
+    u8 tmp = ndx % 8;
     CLYDE_ASSERT(c != NULL);
     CLYDE_ASSERT(ndx < CHUNK_NUMENTRIES);
-    bm = ~(1U << (ndx % 8)); /*byte mask*/
-    c->hdr.freelist[ndx/8] &= bm; /*apply mask to clear bit*/
+    CFS_DBG("ndx(%u) => tmp(%u)\n", ndx, tmp);
+    tmp = (1U << (tmp)); /*byte mask*/
+    CFS_DBG("tmp bm: %u -- applying to byte(%u)\n",tmp, ndx/8);
+    c->hdr.freelist[ndx/8] |= tmp; /*apply mask to clear bit*/
 }
 
 /* 
@@ -332,6 +332,8 @@ int cfsc_chunk_entry_insert(u64 *ret_ndx, struct cfsd_inode_chunk *c, struct cfs
     }
 
     c->entries[*ret_ndx] = *e;
+    CLYDE_ASSERT(*ret_ndx <= 255U);
+    c->hdr.off_list[CHUNK_NUM_ITEMS(c)] = (u8)*ret_ndx;
     c->hdr.entries_free--;
 out:
     return retval;
@@ -783,7 +785,7 @@ int cfsc_init(void)
 {
     chunk_pool = kmem_cache_create(
         "chunk_pool",
-		sizeof(struct cfsd_ientry),
+		sizeof(struct cfsd_inode_chunk),
         0,
         /*objects are reclaimable*/
 		SLAB_RECLAIM_ACCOUNT 

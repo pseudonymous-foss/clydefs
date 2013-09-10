@@ -18,7 +18,7 @@ ifneq ($(KERNELRELEASE),)
 	#debugging build
 	ifneq ($(CONFIG_CLYDEFS_DEBUG),)
 		#test code
-		clydefs-y += test.o testio.o
+		clydefs-y += test.o testio.o testchunk.o
 		
 		#embunit
 		clydefs-y += $(EMBUNIT_SRC)/AssertImpl.o
