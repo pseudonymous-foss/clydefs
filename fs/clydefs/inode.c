@@ -440,7 +440,7 @@ int cfsi_inode_update(struct inode *i, int sync)
 
     CLYDE_ASSERT(i != NULL);
     sb = i->i_sb;
-    bd = i->i_bdev;
+    bd = sb->s_bdev;
     ci = CFS_INODE(i);
     /*to persist an inode entry we need the name it was saved under*/
     CLYDE_ASSERT(ci->ientry_dentry != NULL);
@@ -604,9 +604,12 @@ static int __insert_inode_entry(struct inode *dir, struct inode *i, struct dentr
 {
     int retval;
     struct cfs_inode *cdir = CFS_INODE(dir), *ci = CFS_INODE(i);
-
+    struct super_block *sb = NULL;
     CFS_DBG("called...\n");
     CLYDE_ASSERT(d == ci->itbl_dentry);
+
+    sb = dir->i_sb;
+    CLYDE_ASSERT(sb != NULL);
 
     retval = cfsc_ientry_insert(cdir, ci, d);
     if (retval) {
@@ -621,7 +624,7 @@ err_write_ientry:
         CFS_DBG("Failed to write inode entry to disk, releasing ino, inode and inode tbl\n");
         CLYDE_ASSERT(ci->data.tid == CFS_DATA_TID(ci));
         CLYDE_ASSERT(ci->data.nid != 0);
-        if (cfsio_remove_node_sync(dir->i_bdev, ci->data.tid, ci->data.nid)) {
+        if (cfsio_remove_node_sync(sb->s_bdev, ci->data.tid, ci->data.nid)) {
             CFS_DBG(
                 "Failed to remove itbl node when trying to recover from being unable to write a directory inode entry (tid:%llu, nid:%llu)\n",
                 ci->data.tid, ci->data.nid
@@ -740,7 +743,7 @@ static int cfs_vfsi_mkdir(struct inode *dir, struct dentry *d, umode_t mode)
 
     inode_inc_link_count(dir);
 
-    bd = dir->i_bdev;
+    bd = dir->i_sb->s_bdev;
     CLYDE_ASSERT(bd != NULL);
     
     i = cfs_inode_init_new(dir, d, mode|S_IFDIR);

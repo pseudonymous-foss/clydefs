@@ -664,7 +664,7 @@ int cfsc_ientry_update(struct cfs_inode *parent, struct cfs_inode *ci)
     /*can only update an entry already on disk, after all*/
     CLYDE_ASSERT(ci->on_disk);
 
-    bd = parent->vfs_inode.i_bdev;
+    bd = parent->vfs_inode.i_sb->s_bdev;
 
     c = cfsc_chunk_alloc();
     if (!c) {
@@ -744,7 +744,7 @@ int cfsc_ientry_delete(struct cfs_inode *parent, struct cfs_inode *ci)
     /*can only update an entry already on disk, after all*/
     CLYDE_ASSERT(ci->on_disk);
 
-    bd = parent->vfs_inode.i_bdev;
+    bd = parent->vfs_inode.i_sb->s_bdev;
 
     c = cfsc_chunk_alloc();
     if (!c) {

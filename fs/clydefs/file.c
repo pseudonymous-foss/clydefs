@@ -49,9 +49,8 @@ static int cfs_readdir(struct file *filp, void *dirent, filldir_t filldir)
         u64 end_of_chunk;
         CFS_DBG("itbl{tid:%llu, nid:%llu} chunk_ndx{%llu}\n",
                 itbl->tid, itbl->nid, chunk_ndx);
-        CLYDE_ASSERT(i->i_bdev != NULL);
         cfsi_i_wlock(ci);
-        retval = cfsc_read_chunk_sync(i->i_bdev, itbl->tid, itbl->nid, c, chunk_ndx);
+        retval = cfsc_read_chunk_sync(i->i_sb->s_bdev, itbl->tid, itbl->nid, c, chunk_ndx);
         CFS_DBG("c{entries_free:%u, last_chunk:%u}\n",
                 c->hdr.entries_free, c->hdr.last_chunk);
         cfsi_i_wunlock(ci);

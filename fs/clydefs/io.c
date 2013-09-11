@@ -533,6 +533,10 @@ static int cfsio_data_request(struct block_device *bd, enum AOE_CMD cmd, int rw,
     }
     printk("buf size %llu bytes, => %llu pages of %lu bytes (trailing_bytes: %d)\n",
            len, pages_left, PAGE_SIZE, trailing_bytes);
+
+    CLYDE_ASSERT(bd != NULL);
+    CLYDE_ASSERT(buffer != NULL);
+
     #if 0
     if ( cmd == AOECMD_UPDATENODE )
         printk("buf to write:\n");

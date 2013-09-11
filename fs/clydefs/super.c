@@ -432,10 +432,13 @@ err_alloc:
 static void cfs_put_super(struct super_block *sb)
 {
     struct cfs_sb *csb = NULL;
-    printk("clydefs: unmounting fs...\n");
+    CFS_DBG("unmounting fs...\n");
     csb = CFS_SB(sb);
+    CFS_DBG("before kfree csb->ino_buf\n");
     kfree(csb->ino_buf);
+    CFS_DBG("before bdi_destroy\n");
     bdi_destroy(&csb->bdi);
+    CFS_DBG("before kfree sb->s_fs_info\n");
     kfree(sb->s_fs_info); /*free fs-specific superblock info*/
     sb->s_fs_info = NULL;
 }

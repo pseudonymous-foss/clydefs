@@ -150,7 +150,7 @@ static int cfs_readpage(struct page *p, int rwu)
 
     i = p->mapping->host;
     ci = CFS_INODE(i);
-    bd = i->i_bdev;
+    bd = i->i_sb->s_bdev;
 
     /*get offset of request in bytes*/
     off = p->index >> PAGE_CACHE_SHIFT;
@@ -311,7 +311,7 @@ static int cfs_aopi_writepage(struct page *p, struct writeback_control *wbc)
     __dbg_page_status(p);
     i = p->mapping->host;
     ci = CFS_INODE(i);
-    bd = i->i_bdev;
+    bd = i->i_sb->s_bdev;
 
     /*get offset of request in bytes*/
     off = p->index >> PAGE_CACHE_SHIFT;
