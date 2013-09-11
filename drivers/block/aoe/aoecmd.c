@@ -1376,8 +1376,6 @@ static void ktiocomplete_tree(struct frame *f, struct aoe_hdr *hin,
     struct aoeif *ifp;
     struct bio *b;
     struct tree_iface_data *td;
-    u64 buf[40]; /*FIXME REMOVE*/
-    memset(buf,'\0',40);
 
     /*printk("ktiocomplete_tree : treating a treecmd response!\n");*/
     printk("ktiocomplete_tree: (out)treecmd(%u), => tid(%llu), errcode:(0x%x)\n", hout->cmd, dhout->tree.tid, dhout->tree.err);
@@ -1404,8 +1402,6 @@ static void ktiocomplete_tree(struct frame *f, struct aoe_hdr *hin,
     case AOECMD_READNODE:
         td->err |= dhin->tree.err;
         bvcpy(f->bv, f->bv_off, skb, dhout->tree.len);
-        skb_copy_bits(skb, 0, buf, sizeof(u64)); /*FIXME REMOVE*/
-        printk("READNODE RSP BUF: [%llu] (received dhin->tree.len bytes (%llu)) \n", buf[0], dhin->tree.len);
         break;
     }
     
