@@ -5,7 +5,7 @@
 Holds various structures as they appear when persisted to disk
 */
 
-/**number of entries in a chunk*/
+/**Maximum number of entries in a chunk*/
 #define CHUNK_NUMENTRIES 104U
 /**number of bytes to represent freelist, MOD(NUM_ENTRIES;8) 
  * must equal 8 as the code expects each bit to be in use */ 

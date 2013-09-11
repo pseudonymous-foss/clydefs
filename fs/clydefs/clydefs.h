@@ -141,7 +141,7 @@ struct cfs_inode {
 
     /**Disk lock, must be acquired while reading a chunk off disk 
      * or while performing a write operation */ 
-    spinlock_t io_lock;
+    struct mutex io_mutex;
 };
 
 

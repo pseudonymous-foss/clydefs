@@ -10,9 +10,7 @@
 #include "clydefs_disk.h"
 #include "inode.h"
 #include "io.h"
-
-
-
+#include "chunk.h"
 
 static struct dentry *cfs_mount(struct file_system_type *fs_type, int flags,
                              const char *device_path, void *data);
@@ -121,7 +119,7 @@ static struct inode *cfs_alloc_inode(struct super_block *sb)
       which we can later get a hold of via container_of */
     struct cfs_inode *inode;
 
-	inode = kmem_cache_zalloc(cfssup_inode_pool, GFP_KERNEL);
+	inode = kmem_cache_zalloc(cfssup_inode_pool, GFP_ATOMIC);
 	if (!inode) {
 		return NULL;
     }
@@ -166,12 +164,79 @@ static void cfs_inode_init_once(void *data)
 	inode_init_once(&i->vfs_inode);
 }
 
+/** 
+ * Write root inode entry to fs itbl. 
+ * @pre root i_lock is held
+ * @note unlike normal update, there's no write lock to hold. 
+ */
+static int __always_inline cfs_write_inode_root(struct cfs_inode *root)
+{
+    struct super_block *sb = NULL;
+    struct cfs_sb *csb = NULL;
+    struct cfs_node_addr *fs_inode_tbl = NULL;
+    struct cfsd_ientry *ie = NULL;
+    int retval;
+
+    ie = kzalloc(sizeof(struct cfsd_ientry), GFP_NOIO);
+    if (!ie) {
+        retval = -ENOMEM;
+        CFS_DBG("failed to allocate memory for writing root inode to disk\n");
+        goto out;
+    }
+    __copy2d_inode(ie, root); /*populate ientry buffer*/
+
+    sb = root->vfs_inode.i_sb;
+    csb = CFS_SB(sb);
+    fs_inode_tbl = &csb->fs_inode_tbl;
+
+    retval = cfsio_update_node_sync(
+        sb->s_bdev, NULL, NULL,
+        fs_inode_tbl->tid, fs_inode_tbl->nid, 
+        0, /*root is the first and only inode entry in the fs itbl, and entries precede everything else in a chunk*/
+        sizeof(struct cfsd_ientry), 
+        ie
+    );
+
+    if (retval) {
+        retval = -EIO;
+        CFS_DBG("IO error writing root ientry to fs itbl\n");
+    }
+
+    kfree(ie);
+out:
+    return retval;
+}
+
 int cfs_write_inode(struct inode *i, struct writeback_control *wbc)
 {
+    struct cfs_inode *ci = CFS_INODE(i);
     CFS_DBG("called\n");
-    CLYDE_STUB;
-    /*FIXME IMPLEMENT*/
-	/*return cfsi_inode_persist(i);*/
+    CLYDE_ASSERT(spin_is_locked(&i->i_lock));
+    
+    if (unlikely(ci->parent == NULL)) {
+        struct inode *root = NULL;
+
+        /*Ensure the inode truly is the root inode */
+        if (unlikely(ci->vfs_inode.i_ino != CFS_INO_ROOT)) {
+            CFS_DBG(
+                "A non-root inode without a parent was found, ino(%lu), dentry name:'%s' - programming error!\n", 
+                ci->vfs_inode.i_ino, ci->itbl_dentry->d_name.name
+            );
+            BUG();
+        }
+        root = ilookup(ci->vfs_inode.i_sb, CFS_INO_ROOT);
+        if (unlikely(ci != CFS_INODE(root))) {
+            /*a non-root inode without a parent was found, should be impossible*/
+            CFS_DBG("ci inode was given CFS_INO_ROOT(%d) but wasn't the same as the root inode!\n", CFS_INO_ROOT);
+            BUG();
+        }
+
+        return cfs_write_inode_root(ci);
+
+    } else {
+        /*all regular inodes are supposed to have a reference to their parent*/
+        return cfsc_ientry_update(ci->parent, ci);
+    }
     return -1;
 }
 
@@ -301,7 +366,7 @@ static int cfs_sync_fs(struct super_block *sb, int wait)
     int retval;
 
     CFS_DBG("called\n");
-    cfsd_arr = kzalloc(sizeof(struct cfsd_sb)*CLYDE_NUM_SB_ENTRIES, GFP_KERNEL);
+    cfsd_arr = kzalloc(sizeof(struct cfsd_sb)*CLYDE_NUM_SB_ENTRIES, GFP_ATOMIC);
     if (!cfsd_arr) {
         CLYDE_ERR("%s - could not allocate memory for reading in persisted superblocks\n", __FUNCTION__);
         retval = -ENOMEM;
@@ -523,6 +588,7 @@ static int cfs_fill_super(struct super_block *sb, void *data, int silent)
 		retval = -EINVAL;
 		goto err_root_dirmode;
 	}
+    CFS_INODE(root)->itbl_dentry = sb->s_root; /*Associate dentry('/') w. root entry*/
 
     /*FIXME - does this suffice to enable read-ahead ?*/
     cfs_sb->bdi.ra_pages = 32; /*64kb read-ahead*/
@@ -532,7 +598,7 @@ static int cfs_fill_super(struct super_block *sb, void *data, int silent)
 		goto err_bdi_reg;
 	}
 
-    /*FIXME -- add bdi info for writeback support if wanted*/
+    CFS_DBG("ClydeFS file system mounted\n");
     kfree(cfsd_sb_arr);
     return 0; /*success*/
 err_bdi_reg:
@@ -631,7 +697,7 @@ static const struct super_operations cfs_super_operations = {
     /*remove inode from disk*/
     .destroy_inode = cfs_destroy_inode,
     /*when informed by bdi to write a dirty inode to disk*/
-    /*.write_inode = cfs_write_inode,*/
+    .write_inode = cfs_write_inode,
     /*called when an inode is about to be dropped*/
     .drop_inode = cfs_drop_inode,
     .statfs = simple_statfs,

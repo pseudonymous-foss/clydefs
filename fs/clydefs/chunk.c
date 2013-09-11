@@ -5,9 +5,6 @@
 
 static struct kmem_cache *chunk_pool = NULL;
 
-#define CHUNK_NUM_ITEMS(c) (CHUNK_NUMENTRIES - (c)->hdr.entries_free)
-
-
 static __always_inline int __write_chunk_sync(struct block_device *bd, u64 tid, u64 nid, struct cfsd_inode_chunk *c, int chunk_off) 
 {
     return cfsio_update_node_sync(
@@ -270,7 +267,7 @@ CHUNK INTERFACE CODE
  */
 void *cfsc_chunk_alloc()
 {
-    return kmem_cache_zalloc(chunk_pool, GFP_KERNEL);
+    return kmem_cache_zalloc(chunk_pool, GFP_ATOMIC);
 }
 
 /** 
@@ -316,7 +313,9 @@ void cfsc_chunk_sort(struct cfsd_inode_chunk *c)
 }
 
 /**
- * Finds an empty slot in the chunk and inserts the entry.
+ * Finds an empty slot in the chunk and inserts the entry. 
+ * @param ret_ndx on success; holds the offset within the chunk 
+ *                into which the ientry was inserted.
  * @param c the chunk into which the entry is inserted
  * @param e the entry to insert 
  * @return 0 on success; -1 if the chunk is full 
@@ -386,7 +385,11 @@ int __must_check cfsc_ientry_find(
     struct block_device *bd = NULL;         /*device holding the parent directory's inode table*/
     u64 off;
     int retval;
-    
+    CFS_DBG(
+        "called parent{ino:%lu, name:%s, itbl_nid:%llu} search_dentry{%s}\n", 
+        parent->vfs_inode.i_ino, parent->itbl_dentry->d_name.name,
+        parent->data.nid, search_dentry->d_name.name
+    );
     CLYDE_ASSERT(ret_buf != NULL);
     CLYDE_ASSERT(ret_loc != NULL);
     CLYDE_ASSERT(parent != NULL);
@@ -416,14 +419,22 @@ read_chunk:
         retval = -EIO;
         goto err_io;
     }
+    if (itbl->nid == 1 && parent->vfs_inode.i_ino == CFS_INO_ROOT){
+        CFS_DBG(
+            "Read a chunk of the root itbl {tid:%llu,nid:%llu} - chunk_hdr{entries_free:%u, last_chunk:%u}\n", 
+            itbl->tid, itbl->nid, ret_buf->hdr.entries_free, ret_buf->hdr.last_chunk
+        );
+    }
 
-    ret_loc->chunk_off = 0;
+    ret_loc->chunk_off = 0; /*chunk_lookup requires this to be set to 0*/
     retval = chunk_lookup(&ret_loc->chunk_off, ret_buf, &search_key);
     if (retval == NOT_FOUND) {
         /*did not find the entry*/
         if(ret_buf->hdr.last_chunk) {
+            CFS_DBG("could not find entry, searched %llu chunks\n", ret_loc->chunk_ndx);
             goto out; /*will return NOT_FOUND*/
         } else { /*advance to next*/
+            CFS_DBG("entry not in this chunk, advancing to next\n");
             ret_loc->chunk_ndx++;
             off += sizeof(struct cfsd_ientry) + CHUNK_TAIL_SLACK_BYTES;
             goto read_chunk;
@@ -522,7 +533,8 @@ static __always_inline int cfs_ientry_init(
  *               and 'inode_d'
  * @param inode the metadata of the new inode entry 
  * @param inode_d the name of the new inode entry 
- * @pre NO LOCKS TAKEN
+ * @pre NO LOCKS TAKEN 
+ * @post on success; on_disk=1 and dsk_ientry_loc set 
  * @return 0 on sucess; error otherwise 
  *  -ENOMEM -- allocations failed
  *  -EIO -- error while reading chunks in parent inode table or
@@ -537,10 +549,10 @@ int cfsc_ientry_insert(struct cfs_inode *parent, struct cfs_inode *inode, struct
     struct cfsd_ientry tmp_ientry;
     int retval;
 
+    CFS_DBG("called...\n");
     CLYDE_ASSERT(parent != NULL);
     CLYDE_ASSERT(inode != NULL);
     CLYDE_ASSERT(inode_d != NULL);
-    CLYDE_ASSERT( spin_is_locked(&parent->vfs_inode.i_lock) );
 
     chunk_curr = cfsc_chunk_alloc();
     if (!chunk_curr) {
@@ -602,7 +614,12 @@ read_chunk:
             retval = -EIO;
             goto out;
         }
-        /*SUCCESS: fall out*/
+
+        /*SUCCESS: update inode to reflect its disk location*/
+        inode->dsk_ientry_loc.chunk_ndx = off;
+        inode->dsk_ientry_loc.chunk_off = ientry_ndx;
+        smp_mb();
+        inode->on_disk = 1;
     } else {
         if (!chunk_curr->hdr.last_chunk) {
             off += CHUNK_SIZE_DISK_BYTES;
@@ -618,6 +635,16 @@ err:
     return retval;
 }
 
+/** 
+ * Update an existing entry for inode 'ci' in the inode table of
+ * 'parent'. 
+ * @param parent the parent directory of ci 
+ * @param ci the entry to be updated. 
+ * @return 0 on success; 
+ * -ENOMEM if allocations fail; 
+ * -EIO if IO errors occur; 
+ * -ENAMETOOLONG if ci's associated dentry name is too long 
+ */ 
 int cfsc_ientry_update(struct cfs_inode *parent, struct cfs_inode *ci)
 {
     struct cfsd_inode_chunk *c = NULL;

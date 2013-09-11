@@ -533,12 +533,12 @@ static int cfsio_data_request(struct block_device *bd, enum AOE_CMD cmd, int rw,
     }
     printk("buf size %llu bytes, => %llu pages of %lu bytes (trailing_bytes: %d)\n",
            len, pages_left, PAGE_SIZE, trailing_bytes);
-
+    #if 0
     if ( cmd == AOECMD_UPDATENODE )
         printk("buf to write:\n");
     print_hex_dump(KERN_EMERG, "", DUMP_PREFIX_NONE, 16, 1, buffer, len, 0);
-
-    req = kmem_cache_zalloc(cfsio_rq_pool, GFP_KERNEL);
+    #endif
+    req = kmem_cache_zalloc(cfsio_rq_pool, GFP_ATOMIC);
     if (!req) {
         printk("\t\tfailed to allocate request structure\n");
         retval = -ENOMEM;

@@ -150,6 +150,22 @@ err_mk_sb_tbl:
     return retval;
 }
 
+static __always_inline void root_ientry_init(struct cfsd_ientry *re, u64 itbl_nid)
+{
+    /*set up root inode entry and write it to the fs inode table*/
+    re->ino = cpu_to_le64(CFS_INO_ROOT);
+    re->uid = 0;
+    re->gid = 0;
+    re->ctime = re->mtime = cpu_to_le64( get_seconds() );
+    /*all inodes start with just one chunk*/
+    re->size_bytes = cpu_to_le64(CHUNK_SIZE_DISK_BYTES);
+    re->data_nid = cpu_to_le64(itbl_nid);
+    re->icount = 0;
+    re->mode = cpu_to_le16(S_IFDIR | 0755);
+    strcpy(re->name, "/");
+    re->nlen = strlen(re->name);
+}
+
 /** 
  *  Make the fs inode table containing just the root directory
  *  entry. In the process, populate and initialise the root
@@ -190,12 +206,13 @@ static __always_inline int cfs_mk_fs_itbl(u64 *ret_fs_itbl_nid, struct block_dev
         CLYDE_ERR("Failed to create node for root's inode table in inode tree (tid:%llu)\n", inode_tree_tid);
         goto err_mk_root_itbl;
     }
-    cfsc_chunk_init(chunk);
+    CFS_DBG("Write root itbl chunk#0: hdr{entries_free:%u, last_chunk:%u}\n", chunk->hdr.entries_free, chunk->hdr.last_chunk);
     retval = cfsc_write_chunk_sync(bd, inode_tree_tid, root_itbl_nid, chunk, 0);
     if (retval) {
         CLYDE_ERR("Failed to write contents of root's inode table in inode tree (tid:%llu,nid:%llu)\n", inode_tree_tid, root_itbl_nid);
         goto err_mk_root_itbl_write;
     }
+    smp_mb();
 
     /*create the FS inode table*/
     retval = cfsio_insert_node_sync(
@@ -206,18 +223,7 @@ static __always_inline int cfs_mk_fs_itbl(u64 *ret_fs_itbl_nid, struct block_dev
         goto err_mk_fs_itbl;
     }
 
-    /*set up root inode entry and write it to the fs inode table*/
-    root_entry.ino = cpu_to_le64(CFS_INO_ROOT);
-    root_entry.uid = 0;
-    root_entry.gid = 0;
-    root_entry.ctime = root_entry.mtime = cpu_to_le64( get_seconds() );
-    /*all inodes start with just one chunk*/
-    root_entry.size_bytes = cpu_to_le64(CHUNK_SIZE_DISK_BYTES);
-    root_entry.data_nid = cpu_to_le64(inode_tree_tid);
-    root_entry.icount = 0;
-    root_entry.mode = cpu_to_le16(S_IFDIR | 0755);
-    strcpy(root_entry.name, "/");
-    root_entry.nlen = strlen(root_entry.name);
+    root_ientry_init(&root_entry, root_itbl_nid);
 
     if ( cfsc_chunk_entry_insert(&root_entry_ndx, chunk, &root_entry) ){
         /*we cannot fail inserting into an empty chunk, must be a programming error*/
@@ -239,6 +245,7 @@ static __always_inline int cfs_mk_fs_itbl(u64 *ret_fs_itbl_nid, struct block_dev
 
     *ret_fs_itbl_nid = fs_itbl_nid; /*return nid of the fs inode table*/
     kfree(chunk);
+    CFS_DBG("success! - root itbl {tid:%llu,nid:%llu}\n", inode_tree_tid, root_itbl_nid);
     return 0; /*success*/
 
 err_mk_fs_itbl_write:
@@ -289,7 +296,7 @@ int cfsfs_create(struct cfs_node_addr *ret_fs_sb_tbl, char const * const dev_pat
         goto err_bdev;
     }
 
-    printk("Making file-, inode- and super-trees.\n");
+    /*Making file-, inode- and super-trees.*/
     retval = cfs_mk_trees(bd, &file_tree_tid, &inode_tree_tid, &fs_tree_tid);
     if (retval) {
         CLYDE_ERR("%s - failed make file system trees\n", __FUNCTION__);
@@ -299,6 +306,7 @@ int cfsfs_create(struct cfs_node_addr *ret_fs_sb_tbl, char const * const dev_pat
     CLYDE_ASSERT(inode_tree_tid != 0);
     CLYDE_ASSERT(fs_tree_tid != 0);
 
+    /*Create FS itbl, for holding the root ientry*/
     retval = cfs_mk_fs_itbl(&fs_itbl_nid, bd, inode_tree_tid);
     if (retval) {
         CLYDE_ERR("%s - failed inode tables for fs and root dir\n", __FUNCTION__);
@@ -306,6 +314,7 @@ int cfsfs_create(struct cfs_node_addr *ret_fs_sb_tbl, char const * const dev_pat
     }
     CLYDE_ASSERT(fs_itbl_nid != 0);
 
+    /*Create 1MB ino tbl node*/
     retval = cfsio_insert_node_sync(bd,&ino_tbl_nid, fs_tree_tid, 1024*1024);
     if (retval) {
         CLYDE_ERR("%s - failed to create inode reclamation tbl\n", __FUNCTION__);
@@ -319,13 +328,12 @@ int cfsfs_create(struct cfs_node_addr *ret_fs_sb_tbl, char const * const dev_pat
     tmp_sb.fs_inode_tbl.nid = fs_itbl_nid;
     tmp_sb.generation = 1;
     tmp_sb.magic_ident = CFS_MAGIC_IDENT;
-
     tmp_sb.fs_ino_tbl.tid = fs_tree_tid;
     tmp_sb.fs_ino_tbl.nid = ino_tbl_nid;
     tmp_sb.ino_nxt_free = CFS_INO_MIN;
-    tmp_sb.ino_tbl_start = tmp_sb.ino_tbl_end = 0; /*empty*/
+    tmp_sb.ino_tbl_start = tmp_sb.ino_tbl_end = 0; /*ino tbl starts empty*/
     
-
+    /*Create & write the superblock table node*/
     retval = cfs_mk_sb_tbl(&sb_tbl_nid, bd, fs_tree_tid, &tmp_sb);
     if (retval) {
         CLYDE_ERR("%s - failed to create superblock table\n", __FUNCTION__);

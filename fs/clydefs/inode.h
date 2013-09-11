@@ -41,7 +41,7 @@ static __always_inline u64 CFS_INODE_TID(struct cfs_sb *csb)
 static __always_inline u64 CFS_DATA_TID(struct cfs_inode const * const ci)
 {
     struct cfs_sb const * const csb = CFS_SB(ci->vfs_inode.i_sb);
-    return (ci->vfs_inode.i_mode | S_IFDIR) ? csb->fs_ino_tbl.tid : csb->file_tree_tid;
+    return (ci->vfs_inode.i_mode & S_IFDIR) ? csb->fs_inode_tbl.tid : csb->file_tree_tid;
 }
 
 /** 
@@ -134,8 +134,7 @@ static __always_inline void __copy2d_inode(struct cfsd_ientry *dst, struct cfs_i
 static __always_inline void cfsi_i_wlock(struct cfs_inode *ci)
 {
     CLYDE_ASSERT(ci != NULL);
-    spin_lock(&ci->vfs_inode.i_lock);
-    spin_lock(&ci->io_lock);
+    mutex_lock(&ci->io_mutex);
     smp_mb();
 }
 
@@ -143,8 +142,7 @@ static __always_inline void cfsi_i_wunlock(struct cfs_inode *ci)
 {
     CLYDE_ASSERT(ci != NULL);
     smp_mb();
-    spin_unlock(&ci->vfs_inode.i_lock);
-    spin_unlock(&ci->io_lock);
+    mutex_unlock(&ci->io_mutex);
 }
 
 

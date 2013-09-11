@@ -15,6 +15,9 @@
  * number of entries possible to have in a chunk */ 
 #define OFFSET_UNUSED 0b11111111U
 
+/**Number of items in chunk */ 
+#define CHUNK_NUM_ITEMS(c) (CHUNK_NUMENTRIES - (c)->hdr.entries_free)
+
 enum CHUNK_LOOKUP_RES { FOUND = 0, NOT_FOUND = 1 };
 
 
@@ -30,7 +33,6 @@ int cfsc_mk_itbl_node(u64 *ret_itbl_nid, struct block_device *bd, u64 tid);
 
 int cfsc_read_chunk_sync(struct block_device *bd, u64 tid, u64 nid, struct cfsd_inode_chunk *c, int chunk_off);
 int cfsc_write_chunk_sync(struct block_device *bd, u64 tid, u64 nid, struct cfsd_inode_chunk *c, int chunk_off);
-
 
 int cfsc_ientry_insert(struct cfs_inode *parent, struct cfs_inode *inode, struct dentry *inode_d);
 int cfsc_ientry_update(struct cfs_inode *parent, struct cfs_inode *ci);
