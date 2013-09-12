@@ -10,11 +10,6 @@
 
 /*
     OUTSTANDING ISSUES
-    .create
-        I'm marking the inode dirty yet I haven't yet made its ientry.
-            (can branch on on_disk, which is 0 on a newly minted inode to
-            then persist it to disk)
-    - ERRORI markers, all point to an error relating to code in its immediate surroundings
  
     - I'm passing along a NULL parent (and a NULL ientry_loc) for cfs_inode_init in cfsi_getroot
         pass an entry_loc which fits where the inode ientry should be in fs itbl and NULL work
@@ -65,23 +60,11 @@ static __always_inline void __cfs_i_common_init(struct cfs_inode *parent, struct
 
     /*set parent reference*/
     if (likely(parent)) {
-        /*Associate with parent*/
-        #if 0
-        if ( spin_is_locked(&parent->vfs_inode.i_lock) ) {
-            CFS_DBG("PARENT_ALREADY_LOCKED\n");
-        } else {
-            CFS_DBG("PARENT_UNLOCKED\n");
-        }
-        CFSI_LOCK(parent);
-        #endif
         /*assign parent to new inode and increment parent's usage count*/
         ci->parent = CFS_INODE(iget_locked(
             parent->vfs_inode.i_sb, 
             parent->vfs_inode.i_ino
         ));
-        #if 0
-        CFSI_UNLOCK(parent);
-        #endif
     } else {
         /*only root node can excuse parent==NULL 
           and that we only allow if the sb root isn't set yet*/
@@ -95,23 +78,35 @@ static __always_inline void __cfs_i_common_init(struct cfs_inode *parent, struct
 
     /*set various constants*/
     ci->vfs_inode.i_blkbits = CFS_BLOCKSIZE_SHIFT;
-
+    CLYDE_ASSERT(ci->vfs_inode.i_sb != NULL);
+    CLYDE_ASSERT(ci->vfs_inode.i_sb->s_bdi != NULL);
+    
     /*set inode operations*/
     if (likely(i_mode & S_IFREG)) { /*FILE*/
         ci->status = IS_FILE;
         i->i_op = &cfs_file_inode_ops;
         i->i_fop = &cfs_file_ops;
+        /*
+        i->i_mapping->backing_dev_info = ci->vfs_inode.i_sb->s_bdi;
+        i->i_mapping->a_ops = &cfs_aops;
+        */
+        i->i_mapping->host = i;
+        i->i_mapping->backing_dev_info = &default_backing_dev_info;
+        i->i_mapping->a_ops = &empty_aops;
     } else if (i_mode & S_IFDIR) { /*DIR*/
         ci->status = IS_DIR;
         i->i_op = &cfs_dir_inode_ops;
         i->i_fop = &cfs_dir_file_ops;
+        i->i_mapping->host = i;
+        i->i_mapping->backing_dev_info = &default_backing_dev_info;
+        i->i_mapping->a_ops = &empty_aops;
+        i->i_mapping->writeback_index = 0;
     } else {
         CFS_WARN("could not determine file type - setting regular file ops\n");
         ci->status = IS_FILE;
         i->i_op = &cfs_file_inode_ops;
         i->i_fop = &cfs_file_ops;
     }
-    i->i_mapping->a_ops = &cfs_aops;
 }
 
 /* 
