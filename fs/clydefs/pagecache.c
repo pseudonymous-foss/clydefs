@@ -129,7 +129,7 @@ static __always_inline void __dbg_page_status(struct page *p)
  *  @pre PageLocked(p) => true
  *  @post if not rwu; page is unlocked and marked 'uptodate'
  */ 
-static int cfs_readpage(struct page *p, int rwu)
+static int cfsp_readpage(struct page *p, int rwu)
 {
     /* 
         REQUIRED TO:
@@ -205,13 +205,13 @@ out:
  *  @pre PageLocked(p) => true
  *  @post page is unlocked and marked 'uptodate'
  */ 
-static int cfs_aopi_readpage(struct file *f, struct page *p)
+static int cfsp_aopi_readpage(struct file *f, struct page *p)
 {
     /*isolated read page request, unlock page afterwards*/
-    return cfs_readpage(p, 0);
+    return cfsp_readpage(p, 0);
 }
 
-static int cfs_write_begin(struct file *f, struct address_space *mapping, loff_t off, unsigned len, unsigned flags, struct page **pagep, void **fsdata)
+static int cfsp_write_begin(struct file *f, struct address_space *mapping, loff_t off, unsigned len, unsigned flags, struct page **pagep, void **fsdata)
 {
     /* 
         REQUIRED TO:
@@ -262,7 +262,7 @@ static int cfs_write_begin(struct file *f, struct address_space *mapping, loff_t
         }
         
         /*read data in as part of an rwu operation*/
-        retval = cfs_readpage(p,1);
+        retval = cfsp_readpage(p,1);
         if (retval) {
             unlock_page(p);
             CFS_DBG("failed to read page");
@@ -275,17 +275,18 @@ out:
     return retval;
 }
 
-static int cfs_aopi_write_begin(struct file *f, struct address_space *mapping, loff_t off, unsigned len, unsigned flags, struct page **pagep, void **fsdata)
+static int cfsp_aopi_write_begin(struct file *f, struct address_space *mapping, loff_t off, unsigned len, unsigned flags, struct page **pagep, void **fsdata)
 {
+    CFS_DBG("called\n");
     *pagep = NULL;
-    return cfs_write_begin(f,mapping,off,len,flags,pagep,fsdata);
+    return cfsp_write_begin(f,mapping,off,len,flags,pagep,fsdata);
 }
 
 
 /** 
  * @pre PG_Dirty has been cleared, PageLocked(p) => true 
  */ 
-static int cfs_aopi_writepage(struct page *p, struct writeback_control *wbc)
+static int cfsp_aopi_writepage(struct page *p, struct writeback_control *wbc)
 {
     /* 
         Required to:
@@ -349,7 +350,7 @@ out:
     return retval;
 }
 
-static int cfs_aopi_write_end(struct file *f, struct address_space *mapping, 
+static int cfsp_aopi_write_end(struct file *f, struct address_space *mapping, 
                          loff_t off, unsigned len, unsigned copied, 
                          struct page *p, void *fsdata)
 {
@@ -367,7 +368,9 @@ static int cfs_aopi_write_end(struct file *f, struct address_space *mapping,
     struct inode *i = mapping->host;
     loff_t i_size = i->i_size; /*we hold i_mutex, so reading directly is ok*/
     int retval;
-    
+
+    CFS_DBG("called\n");
+
     /*will unlock & release the page (release=>refcount put operation), & update i_size*/
     retval = simple_write_end(f,mapping,off,len,copied,p,fsdata);
     if (unlikely(retval)) {
@@ -382,32 +385,40 @@ static int cfs_aopi_write_end(struct file *f, struct address_space *mapping,
     return retval;
 }
 
-static int cfs_releasepage(struct page *p, gfp_t gfp)
+static int cfsp_releasepage(struct page *p, gfp_t gfp)
 { /*don't implement*/
+    CFS_DBG("called\n");
     CFS_WARN("page 0x%lx released, STUB!\n", p->index);
     return 0;
 }
 
-static void cfs_invalidatepage(struct page *p, unsigned long off)
+static void cfsp_invalidatepage(struct page *p, unsigned long off)
 { /*don't implement*/
+    CFS_DBG("called\n");
     CFS_WARN("page 0x%lx offset 0x%lx invalidated, STUB!\n", p->index, off);
     WARN_ON(1);
 }
 
+int cfsp_set_page_dirty(struct page *page)
+{
+    CFS_DBG("called\n");
+    return __set_page_dirty_nobuffers(page);
+}
+
 const struct address_space_operations cfs_aops = {
-    .readpage = cfs_aopi_readpage,
+    .readpage = cfsp_aopi_readpage,
     
     /*buffered writes*/
-    .write_begin = cfs_aopi_write_begin,
-    .write_end = cfs_aopi_write_end,
+    .write_begin = cfsp_aopi_write_begin,
+    .write_end = cfsp_aopi_write_end,
 
     /*mostly of interest to mmap'ed calls*/
-    .writepage = cfs_aopi_writepage,
+    .writepage = cfsp_aopi_writepage,
     .writepages = generic_writepages, /*relies on .writepage*/
 
-    .releasepage = cfs_releasepage,
-    .set_page_dirty = __set_page_dirty_nobuffers,
-    .invalidatepage = cfs_invalidatepage,
+    .releasepage = cfsp_releasepage,
+    .set_page_dirty = cfsp_set_page_dirty,
+    .invalidatepage = cfsp_invalidatepage,
     .bmap = NULL,
     .direct_IO = NULL,
     .get_xip_mem = NULL,
