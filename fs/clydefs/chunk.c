@@ -170,10 +170,13 @@ static int ientry_cmp(struct cfsd_ientry const *v1, struct cfsd_ientry const *v2
     return strcmp(v1->name, v2->name);
 }
 
+/**
+ * @pre dentry name len is at most CFS_NAME_LEN long.
+ */
 static __always_inline void chunk_mk_key(struct cfsd_ientry *search_key, struct dentry const * const d)
 {
     search_key->nlen = d->d_name.len;
-    strncpy(search_key->name, d->d_name.name, search_key->nlen); /*FIXME - */
+    strcpy(search_key->name, d->d_name.name);
 }
 
 static int chunk_lookup(
@@ -519,7 +522,7 @@ static __always_inline int cfs_ientry_init(
     if (src_d->d_name.len > CFS_NAME_LEN) {
         return -ENAMETOOLONG;
     }
-    strncpy(dst->name, src_d->d_name.name, src_d->d_name.len);
+    strcpy(dst->name, src_d->d_name.name);
     dst->nlen = cpu_to_le16((u16)src_d->d_name.len);
     CFS_DBG("ientry namecopy: src{d_name.name:%s, len:%d} => dst{name:%s}\n", src_d->d_name.name, src_d->d_name.len, dst->name);
     return 0; /*success*/
@@ -695,7 +698,7 @@ int cfsc_ientry_update(struct cfs_inode *parent, struct cfs_inode *ci)
         if (d->d_name.len > CFS_NAME_LEN) {
             return -ENAMETOOLONG;
         }
-        strncpy(entry->name, d->d_name.name, d->d_name.len);
+        strcpy(entry->name, d->d_name.name);
         entry->nlen = cpu_to_le16((u16)d->d_name.len);
 
         cfsc_chunk_sort(c);
