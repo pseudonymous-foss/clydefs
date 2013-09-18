@@ -6,6 +6,55 @@ const struct file_operations cfs_file_ops;
 const struct file_operations cfs_dir_file_ops;
 
 /** 
+ * Called when the last reference to an open file is closed. 
+ */ 
+static int cfs_file_release(struct inode *inode, struct file *filp)
+{
+    /*
+        As we rely on the generic file functions (which in turn rely on our
+        page cache address operations) we needn't do anything further when
+        a file is to be released.
+    */
+	return 0;
+}
+
+/**
+ * Flush a range of a file's contents to disk and update inode 
+ * to reflect any changes. 
+ */
+static int cfs_file_fsync(struct file *filp, loff_t start, loff_t end,
+			    int datasync)
+{
+	struct inode *inode = filp->f_mapping->host;
+	int ret;
+
+	ret = filemap_write_and_wait_range(inode->i_mapping, start, end);
+	if (ret)
+		return ret;
+
+	mutex_lock(&inode->i_mutex);
+	ret = sync_inode_metadata(filp->f_mapping->host, 1);
+	mutex_unlock(&inode->i_mutex);
+	return ret;
+}
+
+/**
+ * Called by 'fsync' system call to flush a file's contents to 
+ * disk. 
+ */
+static int cfs_file_flush(struct file *file, fl_owner_t id)
+{
+    /*flush file data to disk, along with inode data*/
+	return vfs_fsync(file, 0);
+}
+
+/* Relationship between i_mode and the DT_xxx types */
+static inline unsigned char ientry_dt_type(struct cfsd_ientry *ientry)
+{ /*rewritten from libfs.c dt_type*/
+    return (le16_to_cpu(ientry->mode) >> 12) & 0b1111;
+}
+
+/** 
  * Return next directory in a directory listing. 
  * @param filp the directory file pointer 
  * @param dirent structure to hold information on next directory 
@@ -70,7 +119,7 @@ static int cfs_readdir(struct file *filp, void *dirent, filldir_t filldir)
                 c_entry->name, le16_to_cpu(c_entry->nlen),  /*name and length of name*/
                 chunk_ndx + entry_ndx,                      /*offset of entry (FIXME: can I do this ? just treat offset as an index into a list of entries?)*/
                 le64_to_cpu(c_entry->ino),                  /*ino of directory entry*/
-                DT_UNKNOWN                                  /*file type of directory entry, fs.h ca. 1408 DT_{REG,BLK,CHR,LNK,DIR} etc*/
+                ientry_dt_type(c_entry)                     /*file type of directory entry, fs.h ca. 1408 DT_{REG,BLK,CHR,LNK,DIR} etc*/
             );
             CFS_DBG(
                 "filldir called entry{name:%s, nlen:%d, off:%llu, ino:%llu}\n", 
@@ -82,6 +131,7 @@ static int cfs_readdir(struct file *filp, void *dirent, filldir_t filldir)
                 retval = 0; /*reset retval, we were successful*/
                 goto out;
             }
+            entry_num++; /*sucessfully told VFS about yet another directory entry*/
             entry_ndx++;
         }
         if (c->hdr.last_chunk) {
@@ -95,6 +145,7 @@ static int cfs_readdir(struct file *filp, void *dirent, filldir_t filldir)
         }
     }
 out:
+    filp->f_pos = entry_num; /*advance index by as many entries as we've read*/
     cfsc_chunk_free(c);
 err_alloc:
     return retval;
@@ -113,12 +164,9 @@ const struct file_operations cfs_file_ops = {
     .splice_read = generic_file_splice_read,
     .splice_write = generic_file_splice_write,
 
-    /*Various missing pieces*/
-    /*
     .release = cfs_file_release,
     .fsync = cfs_file_fsync,
-    .flush = cfs_flush
-    */
+    .flush = cfs_file_flush,
 };
 
 const struct file_operations cfs_dir_file_ops = {
