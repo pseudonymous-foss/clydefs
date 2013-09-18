@@ -119,7 +119,7 @@ static struct inode *cfs_alloc_inode(struct super_block *sb)
       which we can later get a hold of via container_of */
     struct cfs_inode *inode;
 
-	inode = kmem_cache_zalloc(cfssup_inode_pool, GFP_ATOMIC);
+    inode = kmem_cache_alloc(cfssup_inode_pool, GFP_ATOMIC);
 	if (!inode) {
 		return NULL;
     }
@@ -207,6 +207,12 @@ out:
     return retval;
 }
 
+/** 
+ * Called when the VFS needs to write an inode to disk. 
+ * @param i the inode in question 
+ * @param wbc determines whether the write request is intended 
+ *            to be synchronous or not. Not necessarily obeyed
+ */ 
 int cfs_write_inode(struct inode *i, struct writeback_control *wbc)
 {
     struct cfs_inode *ci = CFS_INODE(i);
