@@ -529,7 +529,6 @@ aoecmd_ata_rw(struct aoedev *d)
 
     /*initialise frame header and copy data contents*/
 	if (data_rw_frameinit(f)) { /*tree cmd*/
-        printk("new tree cmd out\n");
         buf->sector += bcnt; /*byte-addressability*/
     } else { /*ATA cmd*/
         buf->sector += bcnt >> 9; /*sector-addressability*/
@@ -1376,10 +1375,6 @@ static void ktiocomplete_tree(struct frame *f, struct aoe_hdr *hin,
     struct aoeif *ifp;
     struct bio *b;
     struct tree_iface_data *td;
-
-    /*printk("ktiocomplete_tree : treating a treecmd response!\n");*/
-    printk("ktiocomplete_tree: (out)treecmd(%u), => tid(%llu), errcode:(0x%x)\n", hout->cmd, dhout->tree.tid, dhout->tree.err);
-    printk("ktiocomplete_tree: (in)treecmd(%u), => tid(%llu), errcode:(0x%x)\n", hin->cmd, dhin->tree.tid, dhin->tree.err);
     
     b = f->buf->bio;
     td = (struct tree_iface_data*)b->bi_treecmd;
