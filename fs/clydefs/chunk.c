@@ -521,7 +521,7 @@ static __always_inline int cfs_ientry_init(
     }
     strncpy(dst->name, src_d->d_name.name, src_d->d_name.len);
     dst->nlen = cpu_to_le16((u16)src_d->d_name.len);
-
+    CFS_DBG("ientry namecopy: src{d_name.name:%s, len:%d} => dst{name:%s}\n", src_d->d_name.name, src_d->d_name.len, dst->name);
     return 0; /*success*/
 }
 
@@ -686,6 +686,7 @@ int cfsc_ientry_update(struct cfs_inode *parent, struct cfs_inode *ci)
 
     /*Update ientry*/
     entry = &c->entries[ci->dsk_ientry_loc.chunk_off];
+    spin_lock(&ci->vfs_inode.i_lock);
     __copy2d_inode(entry, ci);
     if (ci->sort_on_update) {
         struct dentry *d = ci->itbl_dentry;
@@ -699,6 +700,7 @@ int cfsc_ientry_update(struct cfs_inode *parent, struct cfs_inode *ci)
 
         cfsc_chunk_sort(c);
     }
+    spin_unlock(&ci->vfs_inode.i_lock);
 
     /*write the updated entry back to disk*/
     retval = cfsio_update_node(
