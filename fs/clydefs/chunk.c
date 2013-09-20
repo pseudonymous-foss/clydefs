@@ -668,6 +668,9 @@ int cfsc_ientry_update(struct cfs_inode *parent, struct cfs_inode *ci)
     CLYDE_ASSERT(ci->on_disk);
 
     bd = parent->vfs_inode.i_sb->s_bdev;
+    CFS_DBG("called parent{ino:%lu, name:%s} ci{ino:%lu, name:%s}\n", 
+            parent->vfs_inode.i_ino, parent->itbl_dentry->d_name.name,
+            ci->vfs_inode.i_ino, parent->itbl_dentry->d_name.name);
 
     c = cfsc_chunk_alloc();
     if (!c) {
@@ -706,7 +709,7 @@ int cfsc_ientry_update(struct cfs_inode *parent, struct cfs_inode *ci)
     spin_unlock(&ci->vfs_inode.i_lock);
 
     /*write the updated entry back to disk*/
-    retval = cfsio_update_node(
+    retval = cfsio_update_node_sync(
         bd, NULL, NULL, 
         ci->data.tid, ci->data.nid, 
         __entry_offset(ci->dsk_ientry_loc.chunk_off), 

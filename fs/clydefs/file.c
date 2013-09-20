@@ -176,17 +176,15 @@ static int cfs_readdir(struct file *filp, void *dirent, filldir_t filldir)
         while(entry_ndx < end_of_chunk) {
             CFS_DBG("deref entry: %llu\n", entry_ndx);
             c_entry = &c->entries[entry_ndx];
-            CFS_DBG("calling filldir\n");
+            CFS_DBG("calling filldir entry{name:%s, nlen:%u, off:%llu, ino:%llu} (mode: %u)\n", 
+                    c_entry->name, le16_to_cpu(c_entry->nlen), chunk_ndx + entry_ndx, 
+                    le64_to_cpu(c_entry->ino), le16_to_cpu(c_entry->mode));
             retval = filldir(
                 dirent,                                     /*directory structure to write into*/
                 c_entry->name, le16_to_cpu(c_entry->nlen),  /*name and length of name*/
                 chunk_ndx + entry_ndx,                      /*offset of entry (FIXME: can I do this ? just treat offset as an index into a list of entries?)*/
                 le64_to_cpu(c_entry->ino),                  /*ino of directory entry*/
                 ientry_dt_type(c_entry)                     /*file type of directory entry, fs.h ca. 1408 DT_{REG,BLK,CHR,LNK,DIR} etc*/
-            );
-            CFS_DBG(
-                "filldir called entry{name:%s, nlen:%d, off:%llu, ino:%llu}\n", 
-                c_entry->name, le16_to_cpu(c_entry->nlen), chunk_ndx+entry_ndx, le64_to_cpu(c_entry->ino)
             );
             if (retval) {
                 /*filldir is filled for this time*/

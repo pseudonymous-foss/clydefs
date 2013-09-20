@@ -160,6 +160,9 @@ static void fragment_end_io(struct bio *b, int error) {
         /*holding the last bio of the request*/
 
         /*invoke user callback*/
+        if(req->endio_cb == NULL) {
+            CFS_DBG("endio_cb is NULL and we're firing it regardless!?\n");
+        }
         req->endio_cb(&req->cb_data, req->endio_cb_data, req->error);
 
         /*request finished, free fragments and request*/

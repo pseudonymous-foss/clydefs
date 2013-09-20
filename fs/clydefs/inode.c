@@ -518,6 +518,7 @@ out:
 
 static __always_inline int __write_inode_update(struct cfs_inode *ci)
 { /*update the ientry of an already persisted inode*/
+    CFS_DBG("called ci{ino:%lu, name:%s}", ci->vfs_inode.i_ino, ci->itbl_dentry->d_name.name);
     return cfsc_ientry_update(ci->parent, ci);
 }
 
@@ -538,7 +539,9 @@ static int __write_inode_insert(struct cfs_inode *ci)
     cdir = ci->parent;
     d = ci->itbl_dentry;
 
-    CFS_DBG("called dir{ino:%lu, name:%s} i{ino:%lu dentry:%s}\n", cdir->vfs_inode.i_ino, cdir->itbl_dentry->d_name.name, ci->vfs_inode.i_ino, d->d_name.name);
+    CFS_DBG("called dir{ino:%lu, name:%s} i{ino:%lu dentry:%s}\n", 
+            cdir->vfs_inode.i_ino, cdir->itbl_dentry->d_name.name, 
+            ci->vfs_inode.i_ino, d->d_name.name);
 
     sb = cdir->vfs_inode.i_sb;
     CLYDE_ASSERT(sb != NULL);
@@ -716,6 +719,7 @@ static int cfs_vfsi_create(struct inode *dir, struct dentry *d, umode_t mode, bo
     i = cfs_inode_init_new(dir, d, mode | S_IFREG); /*handles i_count increase*/
     if (IS_ERR(i)) {
         retval = PTR_ERR(i);
+        CFS_DBG("failed to create new inode for file\n");
         goto out;
     }
     ci = CFS_INODE(i);
@@ -731,9 +735,12 @@ static int cfs_vfsi_create(struct inode *dir, struct dentry *d, umode_t mode, bo
       writing the inode to disk, obviating the need to mark it*/
     retval = cfsi_write_inode(CFS_INODE(i));
     if (retval) {
+        CFS_DBG("Failed to write data node for new file\n");
         goto err_persist_inode;
     }
 
+    CFS_DBG("success, instantiating dentry with inode\n");
+    d_instantiate(d, i);
 out:
     return retval;
 err_persist_inode:
@@ -777,27 +784,29 @@ static struct dentry *cfs_vfsi_lookup(struct inode *dir, struct dentry *d, unsig
 
     c = cfsc_chunk_alloc();
     if (!c) {
-        CFS_WARN("failed to allocate a chunk for lookup purposes\n");
+        CFS_DBG("failed to allocate a chunk for lookup purposes\n");
         return ERR_PTR(-ENOMEM);
     }
 
     retval = cfsc_ientry_find(c, &ientry_loc, CFS_INODE(dir), d);
     if (retval) {
         if (retval != NOT_FOUND)
-            CFS_WARN("failed to lookup entry, but the error wasn't (-1=>NOT_FOUND), something ELSE happened\n");
+            CFS_DBG("failed to lookup entry, but the error wasn't (-1=>NOT_FOUND), something ELSE happened\n");
         goto out; /*FIXME: if retval == NOT_FOUND I'd need to set a null inode to dentry*/
     }
 
     /*found the ientry; now get either the existing inode or intialise it*/
+    CFS_DBG("found the ientry");
     entry = &c->entries[ientry_loc.chunk_off];
     i = cfs_iget(CFS_INODE(dir), entry, &ientry_loc);
     if ( IS_ERR(i) ) {
-        CFS_WARN("failed to get/allocate inode from ientry, ERR_PTR: %ld\n", PTR_ERR(i));
+        CFS_DBG("failed to get/allocate inode from ientry, ERR_PTR: %ld\n", PTR_ERR(i));
         /*not having the actual inode, we MUST splice with a NULL inode 
           to indicate the entry wasn't found*/
         i = NULL;
         goto out;
     }
+    CFS_DBG("ientry found and converted to inode\n");
 out:
     cfsc_chunk_free(c);
     /*splicing i==NULL here means getting a negative 
@@ -833,12 +842,13 @@ static int cfs_vfsi_mkdir(struct inode *dir, struct dentry *d, umode_t mode)
     }
 
     retval = 0;
-    mark_inode_dirty_sync(i);
     if ((retval = cfsi_write_inode(ci))) {
         goto err_write_inode;
     }
 
     inode_inc_link_count(i);
+    CFS_DBG("success, instantiating dentry with inode\n");
+    d_instantiate(d, i);
     goto out; /*success*/
 err_write_inode:
 err_mk_itbl:
