@@ -251,21 +251,43 @@ int cfs_write_inode(struct inode *i, struct writeback_control *wbc)
  * about to be removed.
  */
 int cfs_drop_inode(struct inode *i)
-{
-    /*documentation says i_lock is already held*/
-    struct cfs_inode *ci = NULL;
-    ci = CFS_INODE(i);
-    if (ci->status != IS_UNINITIALISED) {
-        if (ci->parent != NULL) {
-            /*parent inode was assigned, decrement its reference*/
-            iput(&ci->parent->vfs_inode); /*no lock needed*/
-            ci->parent = NULL;
-        }
-        ci->status = IS_UNINITIALISED;
-    }
+{ /*documentation says i_lock is already held*/
     /*forward to default implementation*/
     /*FIXME - not entirely sure the generic function always drops an inode*/
     return generic_drop_inode(i);
+}
+
+/**
+ * Called by the VFS to release the inode. 
+ * Must clear any related pages etc. 
+ *  
+ * @param i inode to be evicted
+ */
+void cfs_evict_inode(struct inode *i)
+{
+    /* fs/inode.c evict(struct inode *inode) would have called
+       a few things if this function wasn't defined*/
+    struct cfs_inode *ci = NULL;
+
+    CFS_DBG("called i{ino: %lu}\n", i->i_ino);
+    ci = CFS_INODE(i);
+    if (ci->status != IS_UNINITIALISED) {
+        CFS_DBG("setting inode status to 'IS_UNINITIALISED'...\n");
+        ci->status = IS_UNINITIALISED;
+    }
+
+    if (ci->parent != NULL) {
+        CFS_DBG("decreasing parent ref...\n");
+        /*parent inode was assigned, decrement its reference*/
+        iput(&ci->parent->vfs_inode); /*no lock needed*/
+        ci->parent = NULL;
+    }
+    if (ci->itbl_dentry != NULL) {
+        CFS_DBG("decreasing itbl dentry ref...\n");
+        dput(ci->itbl_dentry);
+        ci->itbl_dentry = NULL;
+    }
+    clear_inode(i);
 }
 
 /** 
@@ -694,7 +716,8 @@ void super_exit(void)
 
 void cfs_kill_super(struct super_block *sb)
 {
-    kill_litter_super(sb);
+    CFS_DBG("called\n");
+    generic_shutdown_super(sb);
 }
 
 static struct file_system_type clydefs_fs_type = {
@@ -717,5 +740,6 @@ static const struct super_operations cfs_super_operations = {
     .statfs = simple_statfs,
     .put_super = cfs_put_super,
     .sync_fs = cfs_sync_fs,
+    .evict_inode = cfs_evict_inode,
 };
 

@@ -69,6 +69,7 @@ static __always_inline void __cfs_i_common_init(struct cfs_inode *parent, struct
         /*only root node can excuse parent==NULL 
           and that we only allow if the sb root isn't set yet*/
         CLYDE_ASSERT(ci->vfs_inode.i_sb->s_root == NULL);
+        ci->parent = NULL;
     }
 
     /*set tid, actual value depends on whether this is a directory or not*/
@@ -86,13 +87,13 @@ static __always_inline void __cfs_i_common_init(struct cfs_inode *parent, struct
         ci->status = IS_FILE;
         i->i_op = &cfs_file_inode_ops;
         i->i_fop = &cfs_file_ops;
-        /*
+        
         i->i_mapping->backing_dev_info = ci->vfs_inode.i_sb->s_bdi;
         i->i_mapping->a_ops = &cfs_aops;
-        */
         i->i_mapping->host = i;
-        i->i_mapping->backing_dev_info = &default_backing_dev_info;
-        i->i_mapping->a_ops = &empty_aops;
+        /*FIXME remove this, right ?*/
+        //i->i_mapping->backing_dev_info = &default_backing_dev_info;
+        //i->i_mapping->a_ops = &empty_aops;
     } else if (i_mode & S_IFDIR) { /*DIR*/
         ci->status = IS_DIR;
         i->i_op = &cfs_dir_inode_ops;
@@ -629,8 +630,7 @@ static struct inode *cfs_inode_init_new(struct inode *dir, struct dentry *d, umo
     i->i_size = 0;
 
     ci = CFS_INODE(i);
-    ci->parent = cdir;
-    ci->itbl_dentry = d;
+    ci->itbl_dentry = dget(d);
     __cfs_i_common_init(cdir, ci);
 
     ci->on_disk = 0; /*not persisted yet*/
