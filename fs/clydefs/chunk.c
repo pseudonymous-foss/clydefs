@@ -389,9 +389,9 @@ int __must_check cfsc_ientry_find(
     u64 off;
     int retval;
     CFS_DBG(
-        "called parent{ino:%lu, name:%s, itbl_nid:%llu} search_dentry{%s}\n", 
-        parent->vfs_inode.i_ino, parent->itbl_dentry->d_name.name,
-        parent->data.nid, search_dentry->d_name.name
+        "called parent{ino:%lu, itbl_nid:%llu} search_dentry{%s}\n", 
+        parent->vfs_inode.i_ino, parent->data.nid, 
+        search_dentry->d_name.name
     );
     CLYDE_ASSERT(ret_buf != NULL);
     CLYDE_ASSERT(ret_loc != NULL);
@@ -643,12 +643,16 @@ err:
  * 'parent'. 
  * @param parent the parent directory of ci 
  * @param ci the entry to be updated. 
+ * @param i_dentry the dentry associated the inode entry 
  * @return 0 on success; 
  * -ENOMEM if allocations fail; 
  * -EIO if IO errors occur; 
  * -ENAMETOOLONG if ci's associated dentry name is too long 
+ * @note i_dentry is not necessarily the old name, and can be 
+ *       NULL unless 'sort_on_update' is set, in which the
+ *       ientry has been renamed
  */ 
-int cfsc_ientry_update(struct cfs_inode *parent, struct cfs_inode *ci)
+int cfsc_ientry_update(struct cfs_inode *parent, struct cfs_inode *ci, struct dentry *i_dentry)
 {
     struct cfsd_inode_chunk *c = NULL;
     struct cfsd_ientry *entry = NULL;
@@ -660,17 +664,20 @@ int cfsc_ientry_update(struct cfs_inode *parent, struct cfs_inode *ci)
     /*parent must have an itbl*/
     CLYDE_ASSERT(parent->vfs_inode.i_mode & S_IFDIR);
     CLYDE_ASSERT(ci != NULL);
-    /*require inode to be associated to its dentry*/
-    CLYDE_ASSERT(ci->itbl_dentry != NULL);
     /*require inodes to be fully initialised*/
     CLYDE_ASSERT(ci->status != IS_UNINITIALISED);
     /*can only update an entry already on disk, after all*/
     CLYDE_ASSERT(ci->on_disk);
 
     bd = parent->vfs_inode.i_sb->s_bdev;
-    CFS_DBG("called parent{ino:%lu, name:%s} ci{ino:%lu, name:%s}\n", 
-            parent->vfs_inode.i_ino, parent->itbl_dentry->d_name.name,
-            ci->vfs_inode.i_ino, parent->itbl_dentry->d_name.name);
+    if (ci->sort_on_update) {
+        CFS_DBG("called parent{ino:%lu} ci{ino:%lu} i_dentry:%s\n", 
+                parent->vfs_inode.i_ino, ci->vfs_inode.i_ino, 
+                i_dentry->d_name.name);
+    } else {
+        CFS_DBG("called parent{ino:%lu} ci{ino:%lu}\n", 
+                parent->vfs_inode.i_ino, ci->vfs_inode.i_ino);
+    }
 
     c = cfsc_chunk_alloc();
     if (!c) {
@@ -695,7 +702,7 @@ int cfsc_ientry_update(struct cfs_inode *parent, struct cfs_inode *ci)
     spin_lock(&ci->vfs_inode.i_lock);
     __copy2d_inode(entry, ci);
     if (ci->sort_on_update) {
-        struct dentry *d = ci->itbl_dentry;
+        struct dentry *d = i_dentry;
 
         /*changes requiring re-sorting elements can only be changing the inode name*/
         if (d->d_name.len > CFS_NAME_LEN) {
@@ -745,8 +752,6 @@ int cfsc_ientry_delete(struct cfs_inode *parent, struct cfs_inode *ci)
     /*parent must have an itbl*/
     CLYDE_ASSERT(parent->vfs_inode.i_mode & S_IFDIR);
     CLYDE_ASSERT(ci != NULL);
-    /*require inode to be associated to its dentry*/
-    CLYDE_ASSERT(ci->itbl_dentry != NULL);
     /*require inodes to be fully initialised*/
     CLYDE_ASSERT(ci->status != IS_UNINITIALISED);
     /*can only update an entry already on disk, after all*/

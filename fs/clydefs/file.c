@@ -115,7 +115,7 @@ static int cfs_readdir(struct file *filp, void *dirent, filldir_t filldir)
 
     CFS_DBG(
         "called file{ino:%lu, name:%s, f_pos/entry_num:%lld} => ndx{chunk:%llu, entry:%llu}\n", 
-        i->i_ino, ci->itbl_dentry->d_name.name, entry_num, chunk_ndx, entry_ndx
+        i->i_ino, filp->f_path.dentry->d_name.name, entry_num, chunk_ndx, entry_ndx
     );
     c = cfsc_chunk_alloc();
     if (!c) {

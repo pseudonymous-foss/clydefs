@@ -291,8 +291,8 @@ static __always_inline void cfs_inode_init(
     __copy2c_inode(ci, src);
     __cfs_i_common_init(parent, ci);
 
-    ci->on_disk = 1;
     ci->dsk_ientry_loc = *loc;
+    ci->on_disk = 1;
 }
 
 /** 
@@ -517,37 +517,48 @@ out:
 }
 #endif 
 
-static __always_inline int __write_inode_update(struct cfs_inode *ci)
+/**
+ * @param ci inode entry to update 
+ * @param i_dentry (potentially new) dentry associated with 
+ *                 inode entry.
+ * @pre ci on_disk & dsk_ientry_loc is set 
+ * @note 'i_dentry' can be null, need only be set if 
+ *       sort_on_update is true
+ */
+static __always_inline int __write_inode_update(struct cfs_inode *ci, struct dentry *i_dentry)
 { /*update the ientry of an already persisted inode*/
-    CFS_DBG("called ci{ino:%lu, name:%s}", ci->vfs_inode.i_ino, ci->itbl_dentry->d_name.name);
-    return cfsc_ientry_update(ci->parent, ci);
+    CFS_DBG("called ci{ino:%lu}", ci->vfs_inode.i_ino);
+    CLYDE_ASSERT(ci->on_disk);
+    WARN_ON(ci->dsk_ientry_loc.chunk_ndx == 0 && ci->dsk_ientry_loc.chunk_off == 0); /*not necessarily bad*/
+    return cfsc_ientry_update(ci->parent, ci, i_dentry);
 }
 
 /** 
+ * @param ci inode to insert 
+ * @param i_dentry dentry associated inode
+ * @pre ci->parent points to parent directory inode 
  * @post On success; on_disk = 1 && dsk_ientry_loc set with the 
  *       location of the ientry on disk.
  */
-static int __write_inode_insert(struct cfs_inode *ci)
+static int __write_inode_insert(struct cfs_inode *ci, struct dentry *i_dentry)
 { /*Called on new inodes, or inodes which have just been moved to another directory*/
     int retval;
     /*struct cfs_inode *cdir = CFS_INODE(dir), *ci = CFS_INODE(i);*/
     struct cfs_inode *cdir = NULL;
     struct super_block *sb = NULL;
-    struct dentry *d = NULL;
     CLYDE_ASSERT(ci != NULL);
     CLYDE_ASSERT(ci->parent != NULL);
-    CLYDE_ASSERT(ci->itbl_dentry != NULL);
     cdir = ci->parent;
-    d = ci->itbl_dentry;
 
-    CFS_DBG("called dir{ino:%lu, name:%s} i{ino:%lu dentry:%s}\n", 
-            cdir->vfs_inode.i_ino, cdir->itbl_dentry->d_name.name, 
-            ci->vfs_inode.i_ino, d->d_name.name);
+    CFS_DBG("called dir{ino:%lu} i{ino:%lu}  i_dentry:%s\n", 
+            cdir->vfs_inode.i_ino, 
+            ci->vfs_inode.i_ino, i_dentry->d_name.name);
 
     sb = cdir->vfs_inode.i_sb;
     CLYDE_ASSERT(sb != NULL);
+    CLYDE_ASSERT(ci->parent != NULL);
 
-    retval = cfsc_ientry_insert(cdir, ci, d);
+    retval = cfsc_ientry_insert(cdir, ci, i_dentry);
     if (retval) {
         CFS_DBG("\t Failed to write ientry!\n");
         goto err_write_ientry;
@@ -582,15 +593,20 @@ err_write_ientry:
  *  
  * @note called by cfs_write_inode on dirty inodes 
  */
-int cfsi_write_inode(struct cfs_inode *ci)
+int cfsi_write_inode(struct cfs_inode *ci, struct dentry *i_dentry)
 {
     int retval = 0;
     CLYDE_ASSERT(ci != NULL);
 
     if (ci->on_disk) {
-        retval = __write_inode_update(ci);
+        /*only require an i_dentry iff we're renaming*/
+        if (ci->sort_on_update) {
+            CLYDE_ASSERT(i_dentry != NULL);
+        }
+        retval = __write_inode_update(ci, i_dentry);
     } else {
-        retval = __write_inode_insert(ci);
+        CLYDE_ASSERT(i_dentry != NULL); /*need a name to identify the entry*/
+        retval = __write_inode_insert(ci, i_dentry);
     }
 
     return retval;
@@ -630,7 +646,6 @@ static struct inode *cfs_inode_init_new(struct inode *dir, struct dentry *d, umo
     i->i_size = 0;
 
     ci = CFS_INODE(i);
-    ci->itbl_dentry = dget(d);
     __cfs_i_common_init(cdir, ci);
 
     ci->on_disk = 0; /*not persisted yet*/
@@ -711,7 +726,7 @@ static int cfs_vfsi_create(struct inode *dir, struct dentry *d, umode_t mode, bo
     struct cfs_inode *ci = NULL;
     struct block_device *bd = NULL;
     int retval = 0;
-    CFS_DBG("called dir{ino:%lu, dentry: %s} dentry{%s}, mode{%u}\n", dir->i_ino, CFS_INODE(dir)->itbl_dentry->d_name.name, d->d_name.name, mode);
+    CFS_DBG("called dir{ino:%lu} dentry{%s}, mode{%u}\n", dir->i_ino, d->d_name.name, mode);
     CLYDE_ASSERT(dir != NULL);
     CLYDE_ASSERT(d != NULL);
     bd = dir->i_sb->s_bdev;
@@ -733,7 +748,7 @@ static int cfs_vfsi_create(struct inode *dir, struct dentry *d, umode_t mode, bo
 
     /*do not mark the inode dirty, the function below will take care of 
       writing the inode to disk, obviating the need to mark it*/
-    retval = cfsi_write_inode(CFS_INODE(i));
+    retval = cfsi_write_inode(CFS_INODE(i), d);
     if (retval) {
         CFS_DBG("Failed to write data node for new file\n");
         goto err_persist_inode;
@@ -777,7 +792,7 @@ static struct dentry *cfs_vfsi_lookup(struct inode *dir, struct dentry *d, unsig
 
     CLYDE_ASSERT(dir != NULL);
     CLYDE_ASSERT(d != NULL);
-    CFS_DBG("called dir{ino:%lu, name:%s}, dentry{name:%s}\n", dir->i_ino, CFS_INODE(dir)->itbl_dentry->d_name.name, d->d_name.name);
+    CFS_DBG("called dir{ino:%lu}, dentry{name:%s}\n", dir->i_ino, d->d_name.name);
 
     if(d->d_name.len > CFS_NAME_LEN)
         return ERR_PTR(-ENAMETOOLONG);
@@ -842,7 +857,7 @@ static int cfs_vfsi_mkdir(struct inode *dir, struct dentry *d, umode_t mode)
     }
 
     retval = 0;
-    if ((retval = cfsi_write_inode(ci))) {
+    if ((retval = cfsi_write_inode(ci, d))) {
         goto err_write_inode;
     }
 

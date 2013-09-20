@@ -124,10 +124,6 @@ struct cfs_inode {
      * entry. , modify via i_lock*/
     struct cfs_inode *parent;
 
-    /**Dentry holding the name under which this inode is 
-     * persisted */ 
-    struct dentry *itbl_dentry;
-
     /**Points to the inode's data, in case of a directory inode, 
      * this points to the directory's inode table in the inode 
      * tree. For files this points to the node in the file tree 

@@ -148,6 +148,7 @@ static void cfssup_cb_free_inode(struct rcu_head *head)
  */ 
 static void cfs_destroy_inode(struct inode *inode)
 {
+    CFS_DBG("called\n");
 	call_rcu(&inode->i_rcu, cfssup_cb_free_inode);
 }
  
@@ -225,8 +226,8 @@ int cfs_write_inode(struct inode *i, struct writeback_control *wbc)
         /*Ensure the inode truly is the root inode */
         if (unlikely(ci->vfs_inode.i_ino != CFS_INO_ROOT)) {
             CFS_DBG(
-                "A non-root inode without a parent was found, ino(%lu), dentry name:'%s' - programming error!\n", 
-                ci->vfs_inode.i_ino, ci->itbl_dentry->d_name.name
+                "A non-root inode without a parent was found, ino(%lu) - programming error!\n", 
+                ci->vfs_inode.i_ino
             );
             BUG();
         }
@@ -241,7 +242,7 @@ int cfs_write_inode(struct inode *i, struct writeback_control *wbc)
 
     } else {
         /*all regular inodes are supposed to have a reference to their parent*/
-        return cfsi_write_inode(ci);
+        return cfsi_write_inode(ci, NULL);
     }
     return -1;
 }
@@ -276,17 +277,15 @@ void cfs_evict_inode(struct inode *i)
         ci->status = IS_UNINITIALISED;
     }
 
+    #if 0
+    /*RACY code, will crash on fs/inode.c 1435 -- => trying to clear a cleared ino*/
     if (ci->parent != NULL) {
-        CFS_DBG("decreasing parent ref...\n");
+        CFS_DBG("decreasing parent ref... i{ino:%lu} p{ino:%lu}\n", i->i_ino, ci->parent->vfs_inode.i_ino);
         /*parent inode was assigned, decrement its reference*/
         iput(&ci->parent->vfs_inode); /*no lock needed*/
         ci->parent = NULL;
     }
-    if (ci->itbl_dentry != NULL) {
-        CFS_DBG("decreasing itbl dentry ref...\n");
-        dput(ci->itbl_dentry);
-        ci->itbl_dentry = NULL;
-    }
+    #endif
     clear_inode(i);
 }
 
@@ -460,8 +459,12 @@ err_alloc:
 static void cfs_put_super(struct super_block *sb)
 {
     struct cfs_sb *csb = NULL;
+    /*ensure all inodes are safely destroyed before 
+      beginning to destroy FS structures.*/
+    rcu_barrier(); 
     CFS_DBG("unmounting fs...\n");
     csb = CFS_SB(sb);
+    CLYDE_ASSERT(csb != NULL);
     CFS_DBG("before kfree csb->ino_buf\n");
     kfree(csb->ino_buf);
     CFS_DBG("before bdi_destroy\n");
@@ -628,9 +631,6 @@ static int cfs_fill_super(struct super_block *sb, void *data, int silent)
 		retval = -EINVAL;
 		goto err_root_dirmode;
 	}
-    CFS_INODE(root)->itbl_dentry = sb->s_root; /*Associate dentry('/') w. root entry*/
-
-    
 
     CFS_DBG("ClydeFS file system mounted\n");
     kfree(cfsd_sb_arr);
