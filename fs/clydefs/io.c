@@ -606,8 +606,6 @@ next_chunk:
                 (unsigned int)(bio_page_size & 0xFFFFFFFF),
                 offset_in_page(buffer_cur)
         );
-
-        printk("buffer_cur first elem: %llu\n", *((u64*)buffer_cur));
         if ( unlikely(written == 0) ) { /*add_page either succeeds or returns 0*/
             /*can be due to device limitations, fire off bio now*/
             printk("%s - bio being broken up as last page add failed (THIS WON'T WORK RIGHT! THINGS WILL BE COPIED OUT OF ORDER)\n", __FUNCTION__);
