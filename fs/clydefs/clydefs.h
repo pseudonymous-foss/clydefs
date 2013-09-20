@@ -37,7 +37,7 @@
 #define CFS_INO_MAX U64_MAX_VALUE
 
 /**Number of bytes reserved for filename length*/ 
-#define CFS_NAME_LEN 256
+#define CFS_NAME_LEN 255 /*+1 for null*/
 
 /**Number of reclaimable INO entries in the INO tbl (1mb, 
  * 8b/entry) */ 

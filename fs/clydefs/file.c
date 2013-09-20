@@ -5,6 +5,32 @@
 const struct file_operations cfs_file_ops;
 const struct file_operations cfs_dir_file_ops;
 
+/**
+ * Given a file pointer, find and return the parent inode.
+ * @note not sure this method of getting the inode of another FS 
+ *       works or is advisable, for that matter.
+ * @return ino of parent directory
+ */
+static u64 get_parent_ino(struct file *filp)
+{
+    struct dentry *d = NULL;
+    struct dentry *d_parent = NULL;
+    u64 ino;
+
+    CLYDE_ASSERT(filp != NULL);
+
+    d = dget(filp->f_path.dentry);
+    CLYDE_ASSERT(d != NULL);
+    d_parent = dget(d->d_parent);
+    CLYDE_ASSERT(d_parent != NULL);
+    dput(d);
+
+    ino = d_parent->d_inode->i_ino; /*FIXME: not getting a reference to the inode, could disappear*/
+    
+    dput(d_parent);
+    return ino;
+}
+
 /** 
  * Called when the last reference to an open file is closed. 
  */ 
@@ -70,7 +96,8 @@ static int cfs_readdir(struct file *filp, void *dirent, filldir_t filldir)
         read directory entries into 'dirent' structure by supplying key information
         about the entry to 'filldir' callback.
      
-        FIXME: how do I signal there's no more entries to read ?
+        entry_num == filp->pos - 2 -- signifying that each directory has two
+            entries by default, '.' and '..'
     */
     struct inode *i = file_inode(filp);
     struct cfs_inode *ci = CFS_INODE(i);
@@ -79,7 +106,9 @@ static int cfs_readdir(struct file *filp, void *dirent, filldir_t filldir)
     struct cfsd_ientry *c_entry = NULL;
     int retval = 0;
     /*I'm going to use f_pos as an index into the complete list of dir-entries*/
-    loff_t entry_num = filp->f_pos; /*which entry number to read first*/
+
+    //loff_t entry_num = filp->f_pos - 2; /*which entry number to read first*/
+    loff_t entry_num = filp->f_pos;
 
     u64 chunk_ndx = entry_num / CHUNK_NUMENTRIES; /*which chunk to read*/
     u64 entry_ndx = entry_num % CHUNK_NUMENTRIES; /*index in chunk of first entry to read*/
@@ -93,6 +122,40 @@ static int cfs_readdir(struct file *filp, void *dirent, filldir_t filldir)
         retval = -ENOMEM;
         goto err_alloc;
     }
+
+    #if 0
+    if (entry_ndx == 0 /*< 0*/)
+    { /*starting directory listing, fill entries for '.' and '..'*/
+        struct inode *dir_inode = filp->f_inode;
+
+        if (1 && entry_ndx == -2) {
+            retval = filldir(dirent, ".", 1, -2, dir_inode->i_ino, DT_DIR);
+            if (retval) {
+                retval = 0;
+                goto out;
+            }
+            entry_num++; /* => entry_num == -1*/
+        }
+        if (1 && entry_ndx == -1) {
+            /*'..' => parent entry*/
+
+            if (unlikely(cfsi_is_root(dir_inode))) {
+                /*listing the root directory*/
+                retval = filldir(dirent, "..", 2, -1, get_parent_ino(filp), DT_DIR);
+            } else {
+                /*a subdirectory within the filesystem*/
+                retval = filldir(dirent, "..", 2, -1, CFS_INODE(dir_inode)->parent->vfs_inode.i_ino, DT_DIR);
+                
+            }
+
+            if (retval) {
+                    retval = 0;
+                    goto out;
+            }
+            entry_num++; /*=> entry_num == 0, => read real entries*/
+        }
+    }
+    #endif
 
     while(1) {
         u64 end_of_chunk;
@@ -170,7 +233,7 @@ const struct file_operations cfs_file_ops = {
 };
 
 const struct file_operations cfs_dir_file_ops = {
-    .llseek = generic_file_llseek,
-    .read = generic_read_dir,
+    .llseek = generic_file_llseek,  /*OK, does not rely on page table*/
+    .read = generic_read_dir,       /*OK, does not rely on page table*/
     .readdir = cfs_readdir,
 };

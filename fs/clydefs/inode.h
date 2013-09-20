@@ -147,6 +147,8 @@ static __always_inline void cfsi_i_wunlock(struct cfs_inode *ci)
 
 
 struct inode *cfsi_getroot(struct super_block *sb);
+int cfsi_is_root(struct inode *i);
+int cfsi_write_inode(struct cfs_inode *ci);
 
 int cfsi_init(void);
 void cfsi_exit(void);

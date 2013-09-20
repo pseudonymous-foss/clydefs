@@ -217,7 +217,7 @@ int cfs_write_inode(struct inode *i, struct writeback_control *wbc)
 {
     struct cfs_inode *ci = CFS_INODE(i);
     CFS_DBG("called\n");
-    CLYDE_ASSERT(spin_is_locked(&i->i_lock));
+    /*inode's i_lock isn't taken at this point*/
     
     if (unlikely(ci->parent == NULL)) {
         struct inode *root = NULL;
@@ -241,7 +241,7 @@ int cfs_write_inode(struct inode *i, struct writeback_control *wbc)
 
     } else {
         /*all regular inodes are supposed to have a reference to their parent*/
-        return cfsc_ientry_update(ci->parent, ci);
+        return cfsi_write_inode(ci);
     }
     return -1;
 }
