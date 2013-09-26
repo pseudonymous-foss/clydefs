@@ -7,6 +7,9 @@
 #include "io.h"
 /* FIXME :: inode's must point to these page cache functions */
 
+#define RWU_OPERATION 1
+#define NOT_RWU_OPERATION 0
+
 #if 0
 struct page_req
 {
@@ -141,6 +144,7 @@ static int cfsp_readpage(struct page *p, int rwu)
     struct inode *i = NULL;
     struct cfs_inode *ci = NULL;
     struct block_device *bd = NULL;
+    struct cfs_sb *csb = NULL;
     u64 len;
     u64 off;
     int retval = 0;
@@ -151,6 +155,9 @@ static int cfsp_readpage(struct page *p, int rwu)
     i = p->mapping->host;
     ci = CFS_INODE(i);
     bd = i->i_sb->s_bdev;
+    csb = CFS_SB(i->i_sb);
+
+    atomic_inc(&csb->pending_io_ops);
 
     /*get offset of request in bytes*/
     off = p->index >> PAGE_CACHE_SHIFT;
@@ -188,7 +195,7 @@ static int cfsp_readpage(struct page *p, int rwu)
         }
         SetPageUptodate(p);
 
-        if (!rwu) {
+        if (!rwu != RWU_OPERATION) {
             /*just a regulard read which expects the page to be unlocked once done*/
             unlock_page(p);
         }
@@ -198,6 +205,7 @@ static int cfsp_readpage(struct page *p, int rwu)
 out:
     /*FIXME - when should I unmap a page ?*/
     kunmap(p);
+    atomic_dec(&csb->pending_io_ops);
     return retval;
 }
 
@@ -208,10 +216,10 @@ out:
 static int cfsp_aopi_readpage(struct file *f, struct page *p)
 {
     /*isolated read page request, unlock page afterwards*/
-    return cfsp_readpage(p, 0);
+    return cfsp_readpage(p, NOT_RWU_OPERATION);
 }
 
-static int cfsp_write_begin(struct file *f, struct address_space *mapping, loff_t off, unsigned len, unsigned flags, struct page **pagep, void **fsdata)
+static int cfs_write_begin(struct file *f, struct address_space *mapping, loff_t off, unsigned len, unsigned flags, struct page **pagep, void **fsdata)
 {
     /* 
         REQUIRED TO:
@@ -233,53 +241,74 @@ static int cfsp_write_begin(struct file *f, struct address_space *mapping, loff_
     */
 
     struct page *p = NULL;
-    int retval;
+    int retval = 0;
+    u64 read_bytes = 0;
     
     CFS_DBG("called\n");
 
     p = *pagep;
     if (p == NULL) {
+        CFS_DBG("getting a page\n");
         retval = simple_write_begin(f,mapping,off,len,flags,pagep,fsdata);
         if (retval) {
             CFS_DBG("simple_write_begin call returned with an error\n");
             goto out;
         }
+        p = *pagep; /*reassigning is necesary as simple_write_begin is expected to set *pagep */
+    }
+    CFS_DBG("simple_write_begin done..\n");
+
+    
+    if (PageUptodate(p) || len == PAGE_CACHE_SIZE) {
+        /*not doing an RWU operation, simply finding a page 
+          will suffice, then, all done!*/
+        goto out;
+    }
+
+    CFS_DBG("page not up-to-date or doing a partial write\n");
+    /*
+        page is not up to date or we're writing less
+        than the base unit of transfer which corresponds to
+        a page - 
+    */
+    read_bytes = page_ndx_to_bytes(p);
+
+    if (!read_bytes) {
+        /*out of range*/
+        CFS_DBG("out of range\n");
+        clear_highpage(p);
+        SetPageUptodate(p);
+        goto out;
+    }
+        
+    /*read data in as part of an rwu operation*/
+    CFS_DBG("b4 cfsp_readpage\n");
+    retval = cfsp_readpage(p, RWU_OPERATION);
+    if (retval) {
+        unlock_page(p);
+        CFS_DBG("failed to read page");
     }
 
     if (!PageUptodate(p) && (len != PAGE_CACHE_SIZE)) {
-        /*
-            page is not up to date or we're writing less
-            than the base unit of transfer which corresponds to
-            a page - 
-        */
-        u64 read_bytes = page_ndx_to_bytes(p);
-
-        if (!read_bytes) {
-            /*out of range*/
-            clear_highpage(p);
-            SetPageUptodate(p);
-            goto out;
-        }
         
-        /*read data in as part of an rwu operation*/
-        retval = cfsp_readpage(p,1);
-        if (retval) {
-            unlock_page(p);
-            CFS_DBG("failed to read page");
-        }
+        
     }
+    CFS_DBG("b4 out\n");
 out:
     if (unlikely(retval)) {
         __write_failed(mapping->host, off+len);
     }
+    CFS_DBG("done\n");
     return retval;
 }
 
-static int cfsp_aopi_write_begin(struct file *f, struct address_space *mapping, loff_t off, unsigned len, unsigned flags, struct page **pagep, void **fsdata)
+static int cfsp_aopi_write_begin(
+    struct file *f, struct address_space *mapping, 
+    loff_t off, unsigned len, unsigned flags, 
+    struct page **pagep, void **fsdata)
 {
-    CFS_DBG("called\n");
     *pagep = NULL;
-    return cfsp_write_begin(f,mapping,off,len,flags,pagep,fsdata);
+    return cfs_write_begin(f,mapping,off,len,flags,pagep,fsdata);
 }
 
 
@@ -300,6 +329,7 @@ static int cfsp_aopi_writepage(struct page *p, struct writeback_control *wbc)
     */ 
     struct inode *i = NULL;
     struct cfs_inode *ci = NULL;
+    struct cfs_sb *csb = NULL;
     struct block_device *bd = NULL;
     void *p_addr = NULL;
     u64 len;
@@ -312,16 +342,22 @@ static int cfsp_aopi_writepage(struct page *p, struct writeback_control *wbc)
     __dbg_page_status(p);
     i = p->mapping->host;
     ci = CFS_INODE(i);
+    csb = CFS_SB(i->i_sb);
     bd = i->i_sb->s_bdev;
+
+    atomic_inc(&csb->pending_io_ops);
 
     /*get offset of request in bytes*/
     off = p->index >> PAGE_CACHE_SHIFT;
 
     BUG_ON(!PageLocked(p));
+    #if 0
+    /*This will fail if I initiate a write against a new, zero-byte file.*/
     if (PageUptodate(p)){
         CLYDE_ERR("PageUptodate true for (ino: 0x%lx, p->index: 0x%lx)\n", i->i_ino, p->index);
         BUG();
     }
+    #endif 
     len = page_ndx_to_bytes(p);
 
     p_addr = kmap(p);
@@ -337,9 +373,10 @@ static int cfsp_aopi_writepage(struct page *p, struct writeback_control *wbc)
             goto out;
         }
         SetPageUptodate(p);
-        end_page_writeback(p); /*why? logfs/file.c, clear_radix_tree_dirty -*/
+        end_page_writeback(p); /*mark that we are done writing the data back to storage*/
 
         if (PageLocked(p)) {
+            CFS_DBG("page locked, write op over, unlock page\n");
             unlock_page(p); /*FIXME is this always a good idea ?*/
         }
     } else {
@@ -347,9 +384,31 @@ static int cfsp_aopi_writepage(struct page *p, struct writeback_control *wbc)
     }
 out:
     kunmap(p);
+    CFS_DBG("done\n");
+    atomic_dec(&csb->pending_io_ops);
     return retval;
 }
 
+/** 
+ * @description after a write, this operation unlocks and 
+ *              releases the page (decreasing its refcount) and
+ *              updates the inode size to reflect the current
+ *              size of the file, if changed. Finally 
+ * @param f file we are writing to 
+ * @param mapping address space associated file and inode. 
+ * @param off ... 
+ * @param len len of write request made 
+ * @param copied amount that was able to be copied 
+ * @param p reference to page cache page, used in the write 
+ *          operation
+ * @param fsdata (optional) additional data use by the FS during 
+ *               the write operation.
+ * @pre imutex of inode associated file pointer 'f' and address 
+ *      space 'mapping' is held
+ * @pre calling this function means the write itself was 
+ *      successful.
+ * @return on success; number of bytes actually written (copied)
+ */
 static int cfsp_aopi_write_end(struct file *f, struct address_space *mapping, 
                          loff_t off, unsigned len, unsigned copied, 
                          struct page *p, void *fsdata)
@@ -357,13 +416,12 @@ static int cfsp_aopi_write_end(struct file *f, struct address_space *mapping,
     /*
         REQUIRED TO
         - unlock the page, release its refcount
+            [DONE]
         - update i_size
+            [DONE]
         - return < 0 on failure, otherwise no of bytes (<= 'copied')
             that were able to be copied into pagecache
-     
-        - 'len' is the original 'len' passed to write_begin
-        - 'copied' => amount that was able to be copied
-        - ONLY called after a SUCCESSFUL write_begin
+            [DONE]
     */
     struct inode *i = mapping->host;
     loff_t i_size = i->i_size; /*we hold i_mutex, so reading directly is ok*/
@@ -374,36 +432,48 @@ static int cfsp_aopi_write_end(struct file *f, struct address_space *mapping,
     /*will unlock & release the page (release=>refcount put operation), & update i_size*/
     retval = simple_write_end(f,mapping,off,len,copied,p,fsdata);
     if (unlikely(retval)) {
+        CFS_DBG("write failed!\n");
         __write_failed(i, off+len);
     }
 
     if (i_size != i->i_size) {
         /*size changed as a result of the write*/
+        CFS_DBG("i{ino:%lu} size changed as a result of the write\n", i->i_ino);
         mark_inode_dirty(i);
     }
 
+    CFS_DBG("done\n");
     return retval;
 }
 
+/*no need to define*/
+#if 0 
 static int cfsp_releasepage(struct page *p, gfp_t gfp)
-{ /*don't implement*/
+{
     CFS_DBG("called\n");
     CFS_WARN("page 0x%lx released, STUB!\n", p->index);
     return 0;
 }
+#endif 
 
+/*no need to define*/
+#if 0
 static void cfsp_invalidatepage(struct page *p, unsigned long off)
 { /*don't implement*/
     CFS_DBG("called\n");
     CFS_WARN("page 0x%lx offset 0x%lx invalidated, STUB!\n", p->index, off);
     WARN_ON(1);
 }
+#endif
 
+/*no need to define*/
+#if 0
 int cfsp_set_page_dirty(struct page *page)
 {
     CFS_DBG("called\n");
     return __set_page_dirty_nobuffers(page);
 }
+#endif 
 
 const struct address_space_operations cfs_aops = {
     .readpage = cfsp_aopi_readpage,
@@ -416,9 +486,9 @@ const struct address_space_operations cfs_aops = {
     .writepage = cfsp_aopi_writepage,
     .writepages = generic_writepages, /*relies on .writepage*/
 
-    .releasepage = cfsp_releasepage,
-    .set_page_dirty = cfsp_set_page_dirty,
-    .invalidatepage = cfsp_invalidatepage,
+    /*.releasepage = cfsp_releasepage,*/ /*OPTIONAL, but see documentation for responsibilities if defined*/
+    /*.set_page_dirty = cfsp_set_page_dirty,*/ /*OPTIONAL, but see documentation for responsibilities if defined*/
+    /*.invalidatepage = cfsp_invalidatepage,*/
     .bmap = NULL,
     .direct_IO = NULL,
     .get_xip_mem = NULL,

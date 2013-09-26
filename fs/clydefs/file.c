@@ -41,6 +41,7 @@ static int cfs_file_release(struct inode *inode, struct file *filp)
         page cache address operations) we needn't do anything further when
         a file is to be released.
     */
+    CFS_DBG("called\n");
 	return 0;
 }
 
@@ -53,6 +54,8 @@ static int cfs_file_fsync(struct file *filp, loff_t start, loff_t end,
 {
 	struct inode *inode = filp->f_mapping->host;
 	int ret;
+
+    CFS_DBG("called\n");
 
 	ret = filemap_write_and_wait_range(inode->i_mapping, start, end);
 	if (ret)
@@ -71,6 +74,7 @@ static int cfs_file_fsync(struct file *filp, loff_t start, loff_t end,
 static int cfs_file_flush(struct file *file, fl_owner_t id)
 {
     /*flush file data to disk, along with inode data*/
+    CFS_DBG("called\n");
 	return vfs_fsync(file, 0);
 }
 

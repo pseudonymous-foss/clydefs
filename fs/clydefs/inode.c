@@ -282,7 +282,10 @@ static __always_inline void cfs_inode_init(
     struct inode *i = NULL;
 
     CLYDE_ASSERT(ci != NULL);
+    #if 0
+    /*If this is still uncommented, it provoked a deadlock, silly as that seems*/
     CLYDE_ASSERT( spin_is_locked(&ci->vfs_inode.i_lock) );
+    #endif
     CLYDE_ASSERT(src != NULL);
     CLYDE_ASSERT(loc != NULL);
     i = &ci->vfs_inode;
@@ -329,7 +332,9 @@ static __always_inline struct inode *cfs_iget(
     ci = CFS_INODE(i);
 
     /*not found in cache, freshly allocated object*/
+    CFSI_LOCK(ci);
     cfs_inode_init(dir, ci, ientry, loc);
+    CFSI_UNLOCK(ci);
     unlock_new_inode(i); /*all done, others may access the inode now*/
     return i;
 }
@@ -725,11 +730,13 @@ static int cfs_vfsi_create(struct inode *dir, struct dentry *d, umode_t mode, bo
     struct inode *i = NULL;
     struct cfs_inode *ci = NULL;
     struct block_device *bd = NULL;
+    struct cfs_sb *csb = NULL;
     int retval = 0;
     CFS_DBG("called dir{ino:%lu} dentry{%s}, mode{%u}\n", dir->i_ino, d->d_name.name, mode);
     CLYDE_ASSERT(dir != NULL);
     CLYDE_ASSERT(d != NULL);
     bd = dir->i_sb->s_bdev;
+    csb = CFS_SB(dir->i_sb);
 
     i = cfs_inode_init_new(dir, d, mode | S_IFREG); /*handles i_count increase*/
     if (IS_ERR(i)) {
@@ -739,10 +746,12 @@ static int cfs_vfsi_create(struct inode *dir, struct dentry *d, umode_t mode, bo
     }
     ci = CFS_INODE(i);
 
+    atomic_inc(&csb->pending_io_ops);
     ci->data.tid = CFS_DATA_TID(ci);
     retval = cfsio_insert_node_sync(bd, &ci->data.nid, ci->data.tid, 4096);
     if (retval) {
         CFS_DBG("failed to create file node for new file.\n");
+        atomic_dec(&csb->pending_io_ops);
         goto err_data_node_ins;
     }
 
@@ -751,11 +760,13 @@ static int cfs_vfsi_create(struct inode *dir, struct dentry *d, umode_t mode, bo
     retval = cfsi_write_inode(CFS_INODE(i), d);
     if (retval) {
         CFS_DBG("Failed to write data node for new file\n");
+        atomic_dec(&csb->pending_io_ops);
         goto err_persist_inode;
     }
 
     CFS_DBG("success, instantiating dentry with inode\n");
     d_instantiate(d, i);
+    atomic_dec(&csb->pending_io_ops);
 out:
     return retval;
 err_persist_inode:
@@ -784,6 +795,7 @@ static struct dentry *cfs_vfsi_lookup(struct inode *dir, struct dentry *d, unsig
             * i_count field of inode should be incremented (done by cfs_get_inode)
     */ 
     struct inode *i = NULL;
+    struct cfs_sb *csb = NULL;
     struct cfsd_inode_chunk *c = NULL;
     
     struct cfsd_ientry *entry = NULL;
@@ -793,21 +805,26 @@ static struct dentry *cfs_vfsi_lookup(struct inode *dir, struct dentry *d, unsig
     CLYDE_ASSERT(dir != NULL);
     CLYDE_ASSERT(d != NULL);
     CFS_DBG("called dir{ino:%lu}, dentry{name:%s}\n", dir->i_ino, d->d_name.name);
+    csb = CFS_SB(dir->i_sb);
+    atomic_inc(&csb->pending_io_ops);
 
-    if(d->d_name.len > CFS_NAME_LEN)
-        return ERR_PTR(-ENAMETOOLONG);
+    if(d->d_name.len > CFS_NAME_LEN) {
+        retval = -ENAMETOOLONG;
+        goto err;
+    }
 
     c = cfsc_chunk_alloc();
     if (!c) {
         CFS_DBG("failed to allocate a chunk for lookup purposes\n");
-        return ERR_PTR(-ENOMEM);
+        retval = -ENOMEM;
+        goto err;
     }
 
     retval = cfsc_ientry_find(c, &ientry_loc, CFS_INODE(dir), d);
     if (retval) {
         if (retval != NOT_FOUND)
             CFS_DBG("failed to lookup entry, but the error wasn't (-1=>NOT_FOUND), something ELSE happened\n");
-        goto out; /*FIXME: if retval == NOT_FOUND I'd need to set a null inode to dentry*/
+        goto out; /*if retval == NOT_FOUND, splice a NULL inode to the dentry*/
     }
 
     /*found the ientry; now get either the existing inode or intialise it*/
@@ -826,7 +843,11 @@ out:
     cfsc_chunk_free(c);
     /*splicing i==NULL here means getting a negative 
       dentry, which is ok if the entry didn't exist.*/
+    atomic_dec(&csb->pending_io_ops);
     return d_splice_alias(i, d);
+err:
+    atomic_dec(&csb->pending_io_ops);
+    return ERR_PTR(retval);
 }
 
 static int cfs_vfsi_mkdir(struct inode *dir, struct dentry *d, umode_t mode)
@@ -834,6 +855,7 @@ static int cfs_vfsi_mkdir(struct inode *dir, struct dentry *d, umode_t mode)
     struct inode *i = NULL;
     struct cfs_inode *ci = NULL;
     struct block_device *bd;
+    struct cfs_sb *csb = NULL;
     int retval;
 
     CLYDE_ASSERT(dir != NULL);
@@ -842,8 +864,10 @@ static int cfs_vfsi_mkdir(struct inode *dir, struct dentry *d, umode_t mode)
     inode_inc_link_count(dir);
 
     bd = dir->i_sb->s_bdev;
+    csb = CFS_SB(dir->i_sb);
     CLYDE_ASSERT(bd != NULL);
     
+    atomic_inc(&csb->pending_io_ops);
     i = cfs_inode_init_new(dir, d, mode|S_IFDIR);
     if (IS_ERR(i)) {
         retval = PTR_ERR(i);
@@ -871,6 +895,7 @@ err_mk_itbl:
     inode_dec_link_count(dir);
     iput(i);
 out:
+    atomic_dec(&csb->pending_io_ops);
     return retval;
 }
 

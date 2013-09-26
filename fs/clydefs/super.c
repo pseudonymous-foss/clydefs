@@ -51,6 +51,27 @@ struct cfs_mnt_args {
     u64 nid;
 };
 
+/**
+ * Wait for pending IO operations to finish before proceeding.
+ */
+static void cfs_wait_for_pending_io(struct cfs_sb *csb)
+{
+    int pending;
+    CLYDE_ASSERT(csb != NULL);
+
+    for (pending = atomic_read(&csb->pending_io_ops); pending > 0;
+	     pending = atomic_read(&csb->pending_io_ops)) {
+		wait_queue_head_t wq;
+
+		CFS_DBG("waiting for pending io to finish...\n");
+
+		init_waitqueue_head(&wq);
+		wait_event_timeout(wq,
+				  (atomic_read(&csb->pending_io_ops) == 0),
+				  msecs_to_jiffies(100));
+	}
+}
+
 /** 
  *  Parse mount option string.
  *  @param ret_args the parsed mount options
@@ -136,20 +157,35 @@ static struct inode *cfs_alloc_inode(struct super_block *sb)
  */ 
 static void cfssup_cb_free_inode(struct rcu_head *head)
 {
-	struct inode *inode = container_of(head->next, struct inode, i_rcu);
-	kmem_cache_free(cfssup_inode_pool, CFS_INODE(inode));
+	struct inode *i = container_of(head, struct inode, i_rcu);
+    struct cfs_sb *csb = NULL;
+    CFS_DBG("called");
+    CFS_DBG(" for i{ino:%lu}\n", i->i_ino);
+    CLYDE_ASSERT(i != NULL);
+    CLYDE_ASSERT(i->i_sb != NULL);
+    CFS_DBG("extracing superblock\n");
+    csb = CFS_SB(i->i_sb);
+    CFS_DBG("sanity testing...\n");
+    CLYDE_ASSERT(cfssup_inode_pool != NULL);
+    CFS_DBG("free inode...\n");
+	kmem_cache_free(cfssup_inode_pool, CFS_INODE(i));
+    CFS_DBG("dec pending io\n");
+    atomic_dec(&csb->pending_io_ops);
 }
 
 /** 
  * Schedule deallocation of inode. 
- * @param inode the inode to deallocate 
+ * @param i the inode to deallocate 
  * @note cfssup_cb_free_inode will be called once no more 
  *       readers reference the inode.
  */ 
-static void cfs_destroy_inode(struct inode *inode)
+static void cfs_destroy_inode(struct inode *i)
 {
-    CFS_DBG("called\n");
-	call_rcu(&inode->i_rcu, cfssup_cb_free_inode);
+    struct cfs_sb *csb = CFS_SB(i->i_sb);
+    CFS_DBG("called i{ino:%lu}\n", i->i_ino);
+    CLYDE_ASSERT(i->i_sb != NULL);
+    atomic_inc(&csb->pending_io_ops);
+	call_rcu(&i->i_rcu, cfssup_cb_free_inode); /*dec's pending_io_ops, too*/
 }
  
 /** 
@@ -217,9 +253,12 @@ out:
 int cfs_write_inode(struct inode *i, struct writeback_control *wbc)
 {
     struct cfs_inode *ci = CFS_INODE(i);
-    CFS_DBG("called\n");
+    struct cfs_sb *csb = CFS_SB(i->i_sb);
+    int retval = -1;
+    CFS_DBG("called i{ino:%lu}\n", i->i_ino);
     /*inode's i_lock isn't taken at this point*/
     
+    atomic_inc(&csb->pending_io_ops);
     if (unlikely(ci->parent == NULL)) {
         struct inode *root = NULL;
 
@@ -238,13 +277,16 @@ int cfs_write_inode(struct inode *i, struct writeback_control *wbc)
             BUG();
         }
 
-        return cfs_write_inode_root(ci);
-
+        retval = cfs_write_inode_root(ci);
+        /*fall out*/
     } else {
         /*all regular inodes are supposed to have a reference to their parent*/
-        return cfsi_write_inode(ci, NULL);
+        retval = cfsi_write_inode(ci, NULL);
+        /*fall out*/
     }
-    return -1;
+
+    atomic_dec(&csb->pending_io_ops);
+    return retval;
 }
 
 /**
@@ -255,6 +297,7 @@ int cfs_drop_inode(struct inode *i)
 { /*documentation says i_lock is already held*/
     /*forward to default implementation*/
     /*FIXME - not entirely sure the generic function always drops an inode*/
+    CFS_DBG("called i{ino:%lu}\n", i->i_ino);
     return generic_drop_inode(i);
 }
 
@@ -269,13 +312,20 @@ void cfs_evict_inode(struct inode *i)
     /* fs/inode.c evict(struct inode *inode) would have called
        a few things if this function wasn't defined*/
     struct cfs_inode *ci = NULL;
+    struct cfs_sb *csb = NULL;
 
     CFS_DBG("called i{ino: %lu}\n", i->i_ino);
     ci = CFS_INODE(i);
+    csb = CFS_SB(i->i_sb);
+
+    atomic_inc(&csb->pending_io_ops);
     if (ci->status != IS_UNINITIALISED) {
         CFS_DBG("setting inode status to 'IS_UNINITIALISED'...\n");
         ci->status = IS_UNINITIALISED;
     }
+
+    /*release pages associated with the inode from the page cache.*/
+    truncate_inode_pages(&i->i_data, 0);
 
     #if 0
     /*RACY code, will crash on fs/inode.c 1435 -- => trying to clear a cleared ino*/
@@ -287,6 +337,9 @@ void cfs_evict_inode(struct inode *i)
     }
     #endif
     clear_inode(i);
+
+    /*TODO FIXME - actually delete the inode iff i_nlink == 0 -*/
+    atomic_dec(&csb->pending_io_ops);
 }
 
 /** 
@@ -393,6 +446,8 @@ static int cfs_sync_fs(struct super_block *sb, int wait)
     int retval;
 
     CFS_DBG("called\n");
+    
+
     cfsd_arr = kzalloc(sizeof(struct cfsd_sb)*CLYDE_NUM_SB_ENTRIES, GFP_ATOMIC);
     if (!cfsd_arr) {
         CLYDE_ERR("%s - could not allocate memory for reading in persisted superblocks\n", __FUNCTION__);
@@ -401,6 +456,8 @@ static int cfs_sync_fs(struct super_block *sb, int wait)
     }
 
     cfs_sb = CFS_SB(sb);
+    cfs_wait_for_pending_io(CFS_SB(sb));
+
     super_tbl = &cfs_sb->superblock_tbl;
 
     /*read superblock table*/
@@ -461,10 +518,14 @@ static void cfs_put_super(struct super_block *sb)
     struct cfs_sb *csb = NULL;
     /*ensure all inodes are safely destroyed before 
       beginning to destroy FS structures.*/
-    rcu_barrier(); 
+
     CFS_DBG("unmounting fs...\n");
     csb = CFS_SB(sb);
     CLYDE_ASSERT(csb != NULL);
+
+    rcu_barrier();
+    cfs_wait_for_pending_io(CFS_SB(sb));
+    
     CFS_DBG("before kfree csb->ino_buf\n");
     kfree(csb->ino_buf);
     CFS_DBG("before bdi_destroy\n");
@@ -573,6 +634,7 @@ static int cfs_fill_super(struct super_block *sb, void *data, int silent)
     cfs_sb->superblock_tbl.tid = mnt_args->tid;
     cfs_sb->superblock_tbl.nid = mnt_args->nid;
     cfs_sb->ino_buf = ino_buf;
+    atomic_set(&cfs_sb->pending_io_ops, 0); /*start with nothing pending*/
 
     sb->s_op = &cfs_super_operations;
 
@@ -709,7 +771,7 @@ err:
 void super_exit(void)
 {
     /*reverse order of super_init*/
-
+    CFS_DBG("called\n");
     unregister_filesystem(&clydefs_fs_type);
     __inodecache_destroy();
 }
@@ -740,6 +802,7 @@ static const struct super_operations cfs_super_operations = {
     .statfs = simple_statfs,
     .put_super = cfs_put_super,
     .sync_fs = cfs_sync_fs,
+    /*evict inode from cache (release associated pages)*/
     .evict_inode = cfs_evict_inode,
 };
 

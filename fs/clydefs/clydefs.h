@@ -87,6 +87,9 @@ struct cfs_sb {
 
     /**bdi to register with this vfs*/ 
     struct backing_dev_info bdi;
+
+    /**count of how many pending IO ops we have */
+    atomic_t pending_io_ops;
 };
 
 /** 
