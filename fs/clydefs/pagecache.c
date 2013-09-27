@@ -7,8 +7,10 @@
 #include "io.h"
 /* FIXME :: inode's must point to these page cache functions */
 
-#define RWU_OPERATION 1
-#define NOT_RWU_OPERATION 0
+typedef enum {
+    RT_PAGE_READ,
+    RT_PAGE_RWU,
+} read_type_t;
 
 #if 0
 struct page_req
@@ -124,15 +126,15 @@ static __always_inline void __dbg_page_status(struct page *p)
  *  Read (at most) a page's worth of data into the supplied page
  *  as specified by the p->index offset.
  *  @param p page to read data into
- *  @param rwu true if this read is part of a read-write-update
- *             operation (i.e. called in preparation of a write
- *             smaller than a full page on an otherwise not
- *             updated page) -- if so, page will not be unlocked
- *             afterwards
+ *  @param rwu reflects whether this is part of a
+ *             read-write-update operation (i.e. called in
+ *             preparation of a write smaller than a full page
+ *             on an otherwise not updated page) -- if so, page
+ *             will not be unlocked afterwards.
  *  @pre PageLocked(p) => true
  *  @post if not rwu; page is unlocked and marked 'uptodate'
  */ 
-static int cfsp_readpage(struct page *p, int rwu)
+static int cfsp_readpage(struct page *p, read_type_t rwu)
 {
     /* 
         REQUIRED TO:
@@ -149,14 +151,14 @@ static int cfsp_readpage(struct page *p, int rwu)
     u64 off;
     int retval = 0;
 
-    CFS_DBG("called\n");
+    CFS_DBG("called");
     CLYDE_ASSERT(p != NULL);
 
     i = p->mapping->host;
     ci = CFS_INODE(i);
     bd = i->i_sb->s_bdev;
     csb = CFS_SB(i->i_sb);
-
+    CFS_DBG(" ino(%lu)\n", i->i_ino); /*finish 'called ' msg*/
     atomic_inc(&csb->pending_io_ops);
 
     /*get offset of request in bytes*/
@@ -194,13 +196,12 @@ static int cfsp_readpage(struct page *p, int rwu)
             goto out;
         }
         SetPageUptodate(p);
-
-        if (!rwu != RWU_OPERATION) {
-            /*just a regulard read which expects the page to be unlocked once done*/
-            unlock_page(p);
-        }
     } else {
-        CFS_WARN("failed to translate supplied page into an actual address (using kmap(p) )\n");
+        CFS_DBG("failed to translate supplied page into an actual address (using kmap(p) )\n");
+    }
+    if (rwu == RT_PAGE_READ) {
+        /*just a regulard read which expects the page to be unlocked once done*/
+        unlock_page(p);
     }
 out:
     /*FIXME - when should I unmap a page ?*/
@@ -216,7 +217,7 @@ out:
 static int cfsp_aopi_readpage(struct file *f, struct page *p)
 {
     /*isolated read page request, unlock page afterwards*/
-    return cfsp_readpage(p, NOT_RWU_OPERATION);
+    return cfsp_readpage(p, RT_PAGE_READ);
 }
 
 static int cfs_write_begin(struct file *f, struct address_space *mapping, loff_t off, unsigned len, unsigned flags, struct page **pagep, void **fsdata)
@@ -283,15 +284,10 @@ static int cfs_write_begin(struct file *f, struct address_space *mapping, loff_t
         
     /*read data in as part of an rwu operation*/
     CFS_DBG("b4 cfsp_readpage\n");
-    retval = cfsp_readpage(p, RWU_OPERATION);
+    retval = cfsp_readpage(p, RT_PAGE_RWU);
     if (retval) {
         unlock_page(p);
         CFS_DBG("failed to read page");
-    }
-
-    if (!PageUptodate(p) && (len != PAGE_CACHE_SIZE)) {
-        
-        
     }
     CFS_DBG("b4 out\n");
 out:
@@ -377,13 +373,19 @@ static int cfsp_aopi_writepage(struct page *p, struct writeback_control *wbc)
 
         if (PageLocked(p)) {
             CFS_DBG("page locked, write op over, unlock page\n");
-            unlock_page(p); /*FIXME is this always a good idea ?*/
+            unlock_page(p);
+        } else {
+            CFS_DBG("PAGE WASN'T LOCKED !? ERROR!");
+            BUG();
         }
+
     } else {
-        CFS_WARN("failed to translate supplied page into an actual address (using kmap(p) )\n");
+        CFS_DBG("failed to translate supplied page into an actual address (using kmap(p) )\n");
     }
+
 out:
-    kunmap(p);
+    if (p_addr) 
+        kunmap(p);
     CFS_DBG("done\n");
     atomic_dec(&csb->pending_io_ops);
     return retval;

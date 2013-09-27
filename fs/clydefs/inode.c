@@ -28,6 +28,31 @@ extern const struct address_space_operations cfs_aops;
 ========================================================================================== 
 Helper functions
 */ 
+static void dbg_ientry_print(struct cfsd_ientry const * const e)
+{
+    CLYDE_ASSERT(e != NULL);
+    CFS_DBG("\t{\n");
+    if (e->name) {
+        CFS_DBG("\t\tname: %s\n", e->name);
+    } else {
+        CFS_DBG("\t\tname: NULL\n");
+    }
+    
+    CFS_DBG("\t\tino: %llu\n", le64_to_cpu(e->ino));
+    CFS_DBG("\t\tsize_bytes: %llu\n", le64_to_cpu(e->size_bytes));
+    CFS_DBG("\t}\n");
+}
+
+static void dbg_inode_print(struct inode const * const i) 
+{
+    CLYDE_ASSERT(i != NULL);
+    CFS_DBG("\t{\n");
+    
+    CFS_DBG("\t\tino: %lu\n", i->i_ino);
+    CFS_DBG("\t\tsize_bytes: %lld\n", i->i_size);
+    CFS_DBG("\t}\n");
+}
+
 /** 
  * Return the inode number of an ientry formatted to CPU 
  * endianess. 
@@ -36,6 +61,21 @@ Helper functions
 static __always_inline u64 ientry_ino(struct cfsd_ientry const * const e)
 {
     return le64_to_cpu(e->ino);
+}
+
+/**
+ * Associate 'parent' with 'ci' as its parent, increasing the 
+ * reference count of the parent inode in the process -- without 
+ * taking any locks. 
+ * @pre already holds parent lock 
+ * @post parent i_count increased, ci->parent points to parent. 
+ */
+static __always_inline void cfs_i_set_parent_nolock(struct cfs_inode *parent, struct cfs_inode *ci)
+{
+    preempt_disable();
+    ci->parent = parent;
+    atomic_inc(&parent->vfs_inode.i_count);
+    preempt_enable();
 }
 
 /** 
@@ -61,10 +101,7 @@ static __always_inline void __cfs_i_common_init(struct cfs_inode *parent, struct
     /*set parent reference*/
     if (likely(parent)) {
         /*assign parent to new inode and increment parent's usage count*/
-        ci->parent = CFS_INODE(iget_locked(
-            parent->vfs_inode.i_sb, 
-            parent->vfs_inode.i_ino
-        ));
+        cfs_i_set_parent_nolock(parent, ci);
     } else {
         /*only root node can excuse parent==NULL 
           and that we only allow if the sb root isn't set yet*/
@@ -76,6 +113,11 @@ static __always_inline void __cfs_i_common_init(struct cfs_inode *parent, struct
     ci->data.tid = CFS_DATA_TID(ci);
 
     mutex_init(&ci->io_mutex);
+    ci->sort_on_update = 0;
+
+    /*override these after init if inode is persisted*/
+    ci->on_disk = 0;
+    ci->dsk_ientry_loc.chunk_ndx = ci->dsk_ientry_loc.chunk_off = 0;
 
     /*set various constants*/
     ci->vfs_inode.i_blkbits = CFS_BLOCKSIZE_SHIFT;
@@ -87,18 +129,16 @@ static __always_inline void __cfs_i_common_init(struct cfs_inode *parent, struct
         ci->status = IS_FILE;
         i->i_op = &cfs_file_inode_ops;
         i->i_fop = &cfs_file_ops;
-        
+        /*files are handled in the page cache*/
         i->i_mapping->backing_dev_info = ci->vfs_inode.i_sb->s_bdi;
         i->i_mapping->a_ops = &cfs_aops;
         i->i_mapping->host = i;
-        /*FIXME remove this, right ?*/
-        //i->i_mapping->backing_dev_info = &default_backing_dev_info;
-        //i->i_mapping->a_ops = &empty_aops;
     } else if (i_mode & S_IFDIR) { /*DIR*/
         ci->status = IS_DIR;
         i->i_op = &cfs_dir_inode_ops;
         i->i_fop = &cfs_dir_file_ops;
         i->i_mapping->host = i;
+        /*inodes are handled outside the page cache => no address operations*/
         i->i_mapping->backing_dev_info = &default_backing_dev_info;
         i->i_mapping->a_ops = &empty_aops;
         i->i_mapping->writeback_index = 0;
@@ -282,6 +322,7 @@ static __always_inline void cfs_inode_init(
     struct inode *i = NULL;
 
     CLYDE_ASSERT(ci != NULL);
+    /*FIXME review*/
     #if 0
     /*If this is still uncommented, it provoked a deadlock, silly as that seems*/
     CLYDE_ASSERT( spin_is_locked(&ci->vfs_inode.i_lock) );
@@ -529,6 +570,7 @@ out:
  * @pre ci on_disk & dsk_ientry_loc is set 
  * @note 'i_dentry' can be null, need only be set if 
  *       sort_on_update is true
+ * @return 0 on success, negative on errors 
  */
 static __always_inline int __write_inode_update(struct cfs_inode *ci, struct dentry *i_dentry)
 { /*update the ientry of an already persisted inode*/
@@ -609,6 +651,10 @@ int cfsi_write_inode(struct cfs_inode *ci, struct dentry *i_dentry)
             CLYDE_ASSERT(i_dentry != NULL);
         }
         retval = __write_inode_update(ci, i_dentry);
+        if (ci->sort_on_update && retval == 0) {
+            /*write was a success*/
+            ci->sort_on_update = 0;
+        }
     } else {
         CLYDE_ASSERT(i_dentry != NULL); /*need a name to identify the entry*/
         retval = __write_inode_insert(ci, i_dentry);
@@ -652,8 +698,6 @@ static struct inode *cfs_inode_init_new(struct inode *dir, struct dentry *d, umo
 
     ci = CFS_INODE(i);
     __cfs_i_common_init(cdir, ci);
-
-    ci->on_disk = 0; /*not persisted yet*/
 
     /*assign parent (and increment parent's usage to reflect its use)*/
     insert_inode_hash(i); /*hash inode for lookup, based on sb and ino*/
@@ -782,6 +826,7 @@ err_data_node_ins:
  *  @post dentry now refers to the bound inode
  *  @post if found; the found inode has its count incremented by
  *        one. Otherwise; dentry is associated with a NULL inode
+ *  @pre called with the directory inode semaphore held.
  *  @return on success; an inode object matching the entry
  *          identified by dentry 'd' in directory 'dir'. on
  *          failure; dentry is linked to a NULL inode,
@@ -805,6 +850,9 @@ static struct dentry *cfs_vfsi_lookup(struct inode *dir, struct dentry *d, unsig
     CLYDE_ASSERT(dir != NULL);
     CLYDE_ASSERT(d != NULL);
     CFS_DBG("called dir{ino:%lu}, dentry{name:%s}\n", dir->i_ino, d->d_name.name);
+    
+
+
     csb = CFS_SB(dir->i_sb);
     atomic_inc(&csb->pending_io_ops);
 
@@ -830,6 +878,7 @@ static struct dentry *cfs_vfsi_lookup(struct inode *dir, struct dentry *d, unsig
     /*found the ientry; now get either the existing inode or intialise it*/
     CFS_DBG("found the ientry");
     entry = &c->entries[ientry_loc.chunk_off];
+    dbg_ientry_print(entry);
     i = cfs_iget(CFS_INODE(dir), entry, &ientry_loc);
     if ( IS_ERR(i) ) {
         CFS_DBG("failed to get/allocate inode from ientry, ERR_PTR: %ld\n", PTR_ERR(i));
@@ -839,6 +888,7 @@ static struct dentry *cfs_vfsi_lookup(struct inode *dir, struct dentry *d, unsig
         goto out;
     }
     CFS_DBG("ientry found and converted to inode\n");
+    dbg_inode_print(i);
 out:
     cfsc_chunk_free(c);
     /*splicing i==NULL here means getting a negative 
