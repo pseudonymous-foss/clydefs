@@ -125,7 +125,7 @@ static void fragment_end_io(struct bio *b, int error) {
     td = (struct tree_iface_data*)b->bi_treecmd;
     req = (struct cfsio_rq *)b->bi_private;
 
-    printk(
+    CFS_DBG(
         "%s called\n\t\t(bio_num:%d) (bio_completed:%d) initialised(%d)\n",
         __FUNCTION__, atomic_read(&req->cb_data.bio_num), 
         atomic_read(&req->bio_completed), atomic_read(&req->initialised)
@@ -146,15 +146,15 @@ static void fragment_end_io(struct bio *b, int error) {
     if (atomic_read(&req->initialised) == 0) {
         /*this bio completed before all bios of the 
           request were dispatched, nothing further to do*/
-        printk("\t\tbio fragment_end_io called before request initialised, don't process further\n");
+        CFS_DBG("\t\tbio fragment_end_io called before request initialised, don't process further\n");
         return;
     }
     
     if (atomic_read(&req->bio_completed) == atomic_read(&req->cb_data.bio_num)) {
-        printk("\t\tALL BIO'S COMPLETED!!!\n\t\t(time to fire usr cb)\n");
+        CFS_DBG("\t\tALL BIO'S COMPLETED!!!\n\t\t(time to fire usr cb)\n");
         /*all bio's completed*/
         if (atomic_add_return(1, &req->initialised) != 2) {
-            printk("\t\t someone beat us to handling the completion code\n");
+            CFS_DBG("\t\t someone beat us to handling the completion code\n");
             return; /*someone else beat us to it*/
         }
         /*holding the last bio of the request*/
@@ -233,7 +233,7 @@ err_alloc_bio:
  */ 
 static void __dealloc_bio(struct bio *b)
 {
-    printk("%s called\n", __FUNCTION__);
+    CFS_DBG("%s called\n", __FUNCTION__);
     CLYDE_ASSERT(b != NULL);
     if (b->bi_treecmd) { /*assume tree bio*/
         struct cfsio_rq_frag *frag = tbio_get_frag(b);
@@ -242,7 +242,7 @@ static void __dealloc_bio(struct bio *b)
         b->bi_treecmd = NULL;
         b->bi_private = NULL;
     }
-    printk("%s -- bio->bio_cnt (get/put var): %d\n", __FUNCTION__, atomic_read(&b->bi_cnt));
+    CFS_DBG("%s -- bio->bio_cnt (get/put var): %d\n", __FUNCTION__, atomic_read(&b->bi_cnt));
     CLYDE_ASSERT( atomic_read(&b->bi_cnt) == 1);
     bio_put(b);
     
@@ -261,15 +261,15 @@ static void __free_tbio_fragments(struct cfsio_rq *rq)
     
     struct cfsio_rq_frag *frag;
     struct list_head *head, *pos, *nxt;
-    printk("%s called\n", __FUNCTION__);
+    CFS_DBG("%s called\n", __FUNCTION__);
     head = &rq->cb_data.lst;
-    printk("\t\tb4 list traversal\n");
+    CFS_DBG("\t\tb4 list traversal\n");
     list_for_each_safe(pos,nxt, head) {
-        printk("\t\t\tlist_entry(...)\n");
+        CFS_DBG("\t\t\tlist_entry(...)\n");
         frag = list_entry(pos, struct cfsio_rq_frag, lst);
-        printk("\t\t\tlist_del(...)\n");
+        CFS_DBG("\t\t\tlist_del(...)\n");
         list_del(pos);              /*unlink*/
-        printk("\t\t\t__dealloc_bio(...)\n");
+        CFS_DBG("\t\t\t__dealloc_bio(...)\n");
         __dealloc_bio(frag->b);     /*clean up bio & fragment memory use*/
     }
 }
@@ -285,7 +285,7 @@ static void __free_tbio_fragments(struct cfsio_rq *rq)
 static void __submit_bio_sync_end_io(struct bio *b, int error)
 {
 	struct submit_syncbio_data *ret = b->bi_private;
-        printk("%s called...\n", __FUNCTION__);
+        CFS_DBG("%s called...\n", __FUNCTION__);
 	ret->error = error;
 	complete(&ret->event);
 }
@@ -300,15 +300,15 @@ static void __submit_bio_sync_end_io(struct bio *b, int error)
 static int __submit_bio_sync(struct bio *bio, int rw)
 {
     struct submit_syncbio_data ret;
-    printk("%s called...\n", __FUNCTION__);
+    CFS_DBG("%s called...\n", __FUNCTION__);
     rw |= REQ_SYNC;
 	/*initialise queue*/
     init_completion(&ret.event);
 
-    printk("configuring bio...\n");
+    CFS_DBG("configuring bio...\n");
 	bio->bi_private = &ret;
 	bio->bi_end_io = __submit_bio_sync_end_io;
-    printk("b4 actual submit\n");
+    CFS_DBG("b4 actual submit\n");
 	submit_bio(rw, bio);
 	wait_for_completion(&ret.event);
 
@@ -327,7 +327,7 @@ int cfsio_create_tree_sync(struct block_device *bd, u64 *ret_tid) {
     struct tree_iface_data *td = NULL;
     int retval;
 
-    printk("%s called...\n", __FUNCTION__);
+    CFS_DBG("%s called...\n", __FUNCTION__);
     b = __alloc_bio(TREE_BIO, 1);
 
     if (!b) {
@@ -335,20 +335,20 @@ int cfsio_create_tree_sync(struct block_device *bd, u64 *ret_tid) {
         retval = -ENOMEM;
         goto err_alloc_bio;
     }
-    printk("bio allocated\n");
+    CFS_DBG("bio allocated\n");
     td = (struct tree_iface_data*)b->bi_treecmd;
 
     td->cmd = AOECMD_CREATETREE;
-    printk("b4 bio_add_page (nilbuf)\n");
+    CFS_DBG("b4 bio_add_page (nilbuf)\n");
     
     b->bi_bdev = bd;
     if (bio_add_page(b,nilbuf.page_addr,nilbuf.bcnt,nilbuf.vec_off) < nilbuf.bcnt) {
         retval = -ENOMEM;
         goto out;
     }
-    printk("empty page added to bio\n");
+    CFS_DBG("empty page added to bio\n");
 
-    printk("b4 sumitting bio\n");
+    CFS_DBG("b4 sumitting bio\n");
     if ((retval=__submit_bio_sync(b, READ)) != 0) {
         retval = TERR_IO_ERR;
         goto out;
@@ -534,20 +534,15 @@ static int cfsio_data_request(struct block_device *bd, enum AOE_CMD cmd, int rw,
         /*need a trailing page which will contain less than a full page of data*/
         pages_left++;
     }
-    printk("buf size %llu bytes, => %llu pages of %lu bytes (trailing_bytes: %d)\n",
+    CFS_DBG("buf size %llu bytes, => %llu pages of %lu bytes (trailing_bytes: %d)\n",
            len, pages_left, PAGE_SIZE, trailing_bytes);
 
     CLYDE_ASSERT(bd != NULL);
     CLYDE_ASSERT(buffer != NULL);
 
-    #if 0
-    if ( cmd == AOECMD_UPDATENODE )
-        printk("buf to write:\n");
-    print_hex_dump(KERN_EMERG, "", DUMP_PREFIX_NONE, 16, 1, buffer, len, 0);
-    #endif
     req = kmem_cache_zalloc(cfsio_rq_pool, GFP_ATOMIC);
     if (!req) {
-        printk("\t\tfailed to allocate request structure\n");
+        CFS_DBG("\t\tfailed to allocate request structure\n");
         retval = -ENOMEM;
         goto err_alloc_req;
     }
@@ -558,12 +553,12 @@ next_chunk:
     if (chunk_pages > BIO_MAX_PAGES_PER_CHUNK) { /*FIXME; check this*/
         chunk_pages = BIO_MAX_PAGES_PER_CHUNK;
     }
-    printk("chunk_pages: %llu\n", chunk_pages);
+    CFS_DBG("chunk_pages: %llu\n", chunk_pages);
     pages_left -= chunk_pages;
 
     b = __alloc_bio(TREE_BIO, chunk_pages);
     if (!b) {
-        printk("\t\tfailed to allocate tree bio\n");
+        CFS_DBG("\t\tfailed to allocate tree bio\n");
         retval = -ENOMEM;
         goto err_alloc_bio; /*FIXME that will not work here, we don't know how many bio's we'll issue*/
     }
@@ -611,11 +606,11 @@ next_chunk:
         );
         if ( unlikely(written == 0) ) { /*add_page either succeeds or returns 0*/
             /*can be due to device limitations, fire off bio now*/
-            printk("%s - bio being broken up as last page add failed (THIS WON'T WORK RIGHT! THINGS WILL BE COPIED OUT OF ORDER)\n", __FUNCTION__);
+            CFS_DBG("%s - bio being broken up as last page add failed (THIS WON'T WORK RIGHT! THINGS WILL BE COPIED OUT OF ORDER)\n", __FUNCTION__);
             BUG(); /*FIXME: bio_add_page must be doing something to some of the variables - otherwise this really shouldn't fail*/
             break;
         }
-        printk("\t\tbio_add_page called successfully (bio_page_size: %d)\n", bio_page_size);
+        CFS_DBG("\t\tbio_add_page called successfully (bio_page_size: %d)\n", bio_page_size);
 
         buffer_cur += bio_page_size;
         chunk_pages--;

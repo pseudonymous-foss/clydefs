@@ -368,7 +368,7 @@ __tree_rw_frameinit(struct frame *f, struct aoe_datahdr *dh, struct tree_iface_d
     dh->tree.len = f->bcnt;
 
     if (f->buf && bio_data_dir(f->buf->bio) == WRITE) {
-        printk("%s: WRITE MODE ENGAGED (writing: %lu bytes in packet)\n", __FUNCTION__, f->bcnt); /*FIXME REMOVE*/
+        /*printk(KERN_INFO "%s: WRITE MODE ENGAGED (writing: %lu bytes in packet)\n", __FUNCTION__, f->bcnt);*/
         skb_fillup(f->skb, f->bv, f->bv_off, f->bcnt);
         f->skb->len += f->bcnt;
         f->skb->data_len = f->bcnt;
@@ -925,7 +925,7 @@ rexmit_timer(ulong vp)
 			if (tsince_hr(f) < timeout)
 				break;	/* end of expired frames */
 			/* move to flist for later processing */
-            printk("fround frame to rexmit, tag: %ul\n", f->tag);
+            /*printk(KERN_INFO "found frame to rexmit, tag: %ul\n", f->tag);*/
 			list_move_tail(pos, &flist);
 		}
 	}
@@ -1392,7 +1392,6 @@ static void ktiocomplete_tree(struct frame *f, struct aoe_hdr *hin,
     case AOECMD_INSERTNODE:
         td->nid = dhin->tree.nid;
         td->err |= dhin->tree.err;
-        printk("Set: td->err(%u), dhin->tree.err(%u)\n", td->err, dhin->tree.err);
         break;
     case AOECMD_READNODE:
         td->err |= dhin->tree.err;

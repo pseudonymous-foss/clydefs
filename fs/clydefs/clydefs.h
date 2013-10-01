@@ -165,7 +165,7 @@ do {    if (x) break;                                                   \
                __FILE__, __func__, __LINE__, #x); dump_stack(); BUG();  \
 } while (0);
 
-#define CFS_DBG(fmt, a...) printk(KERN_ERR "cfs<%s>,%d -- " fmt, __FUNCTION__, __LINE__, ##a)
+#define CFS_DBG(fmt, a...) printk(KERN_DEBUG "cfs<%s>,%d -- " fmt, __FUNCTION__, __LINE__, ##a)
 #else
 #define CLYDE_ASSERT(x)
 #define CFS_DBG(fmt, a...) 
