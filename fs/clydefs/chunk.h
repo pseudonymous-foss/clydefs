@@ -31,8 +31,8 @@ void cfsc_chunk_entry_delete(struct cfsd_inode_chunk *c, u8 entry_ndx);
 
 int cfsc_mk_itbl_node(u64 *ret_itbl_nid, struct block_device *bd, u64 tid);
 
-int cfsc_read_chunk_sync(struct block_device *bd, u64 tid, u64 nid, struct cfsd_inode_chunk *c, int chunk_off);
-int cfsc_write_chunk_sync(struct block_device *bd, u64 tid, u64 nid, struct cfsd_inode_chunk *c, int chunk_off);
+int cfsc_read_chunk_sync(struct block_device *bd, u64 tid, u64 nid, struct cfsd_inode_chunk *c, u64 chunk_ndx);
+int cfsc_write_chunk_sync(struct block_device *bd, u64 tid, u64 nid, struct cfsd_inode_chunk *c, u64 chunk_ndx);
 
 int cfsc_ientry_insert(struct cfs_inode *parent, struct cfs_inode *inode, struct dentry *inode_d);
 int cfsc_ientry_update(struct cfs_inode *parent, struct cfs_inode *ci, struct dentry *i_dentry);

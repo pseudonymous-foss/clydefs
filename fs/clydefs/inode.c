@@ -117,7 +117,7 @@ static __always_inline void __cfs_i_common_init(struct cfs_inode *parent, struct
 
     /*override these after init if inode is persisted*/
     ci->on_disk = 0;
-    ci->dsk_ientry_loc.chunk_ndx = ci->dsk_ientry_loc.chunk_off = 0;
+    ci->dsk_ientry_loc.chunk_ndx = ci->dsk_ientry_loc.ientry_ndx = 0;
 
     /*set various constants*/
     ci->vfs_inode.i_blkbits = CFS_BLOCKSIZE_SHIFT;
@@ -334,9 +334,11 @@ static __always_inline void cfs_inode_init(
     /*handle the metadata stored in the ientry*/
     __copy2c_inode(ci, src);
     __cfs_i_common_init(parent, ci);
-
     ci->dsk_ientry_loc = *loc;
     ci->on_disk = 1;
+
+    CFS_DBG("REMOVE: initialised ino:%lu from disk, loc(param){chunk:%llu, entry:%llu) => ci->dsk_ientry_loc{chunk:%llu, entry:%llu)}\n",
+            i->i_ino, loc->chunk_ndx, loc->ientry_ndx, ci->dsk_ientry_loc.chunk_ndx, ci->dsk_ientry_loc.ientry_ndx);
 }
 
 /** 
@@ -377,6 +379,9 @@ static __always_inline struct inode *cfs_iget(
     cfs_inode_init(dir, ci, ientry, loc);
     CFSI_UNLOCK(ci);
     unlock_new_inode(i); /*all done, others may access the inode now*/
+
+    CFS_DBG(" read inode ino:%lu, loc(param){chunk:%llu, entry:%llu}, ci->dsk_ientry_loc{chunk:%llu, entry:%llu}\n", 
+            i->i_ino, loc->chunk_ndx, loc->ientry_ndx, ci->dsk_ientry_loc.chunk_ndx, ci->dsk_ientry_loc.ientry_ndx);
     return i;
 }
 
@@ -576,7 +581,7 @@ static __always_inline int __write_inode_update(struct cfs_inode *ci, struct den
 { /*update the ientry of an already persisted inode*/
     CFS_DBG("called ci{ino:%lu}", ci->vfs_inode.i_ino);
     CLYDE_ASSERT(ci->on_disk);
-    WARN_ON(ci->dsk_ientry_loc.chunk_ndx == 0 && ci->dsk_ientry_loc.chunk_off == 0); /*not necessarily bad*/
+    WARN_ON(ci->dsk_ientry_loc.chunk_ndx == 0 && ci->dsk_ientry_loc.ientry_ndx == 0); /*not necessarily bad*/
     return cfsc_ientry_update(ci->parent, ci, i_dentry);
 }
 
@@ -590,7 +595,6 @@ static __always_inline int __write_inode_update(struct cfs_inode *ci, struct den
 static int __write_inode_insert(struct cfs_inode *ci, struct dentry *i_dentry)
 { /*Called on new inodes, or inodes which have just been moved to another directory*/
     int retval;
-    /*struct cfs_inode *cdir = CFS_INODE(dir), *ci = CFS_INODE(i);*/
     struct cfs_inode *cdir = NULL;
     struct super_block *sb = NULL;
     CLYDE_ASSERT(ci != NULL);
@@ -610,6 +614,9 @@ static int __write_inode_insert(struct cfs_inode *ci, struct dentry *i_dentry)
         CFS_DBG("\t Failed to write ientry!\n");
         goto err_write_ientry;
     }
+
+    CFS_DBG("ientry written, ino:%lu, dsk_ientry_loc{chunk:%llu, entry:%llu}\n", 
+            ci->vfs_inode.i_ino, ci->dsk_ientry_loc.chunk_ndx, ci->dsk_ientry_loc.ientry_ndx);
 
     return 0; /*success*/
 
@@ -652,7 +659,7 @@ int cfsi_write_inode(struct cfs_inode *ci, struct dentry *i_dentry)
         }
         retval = __write_inode_update(ci, i_dentry);
         if (ci->sort_on_update && retval == 0) {
-            /*write was a success*/
+            /*write was a success - whatever change required re-sorting has been written*/
             ci->sort_on_update = 0;
         }
     } else {
@@ -850,8 +857,6 @@ static struct dentry *cfs_vfsi_lookup(struct inode *dir, struct dentry *d, unsig
     CLYDE_ASSERT(dir != NULL);
     CLYDE_ASSERT(d != NULL);
     CFS_DBG("called dir{ino:%lu}, dentry{name:%s}\n", dir->i_ino, d->d_name.name);
-    
-
 
     csb = CFS_SB(dir->i_sb);
     atomic_inc(&csb->pending_io_ops);
@@ -877,7 +882,7 @@ static struct dentry *cfs_vfsi_lookup(struct inode *dir, struct dentry *d, unsig
 
     /*found the ientry; now get either the existing inode or intialise it*/
     CFS_DBG("found the ientry");
-    entry = &c->entries[ientry_loc.chunk_off];
+    entry = &c->entries[ientry_loc.ientry_ndx];
     dbg_ientry_print(entry);
     i = cfs_iget(CFS_INODE(dir), entry, &ientry_loc);
     if ( IS_ERR(i) ) {

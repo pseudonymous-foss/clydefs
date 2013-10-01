@@ -98,10 +98,12 @@ struct cfs_sb {
  */
 struct ientry_loc
 {
-    /**in which chunk was the entry located*/ 
+    /**index into the list of chunks of an itbl, 0 is the lead 
+     * chunk */ 
     u64 chunk_ndx;
-    /**offset within chunk */ 
-    u64 chunk_off;
+    /**index into the list of entries of a chunk, 0 is the lead 
+     * entry */ 
+    u64 ientry_ndx;
 };
 
 enum CFSI_STATUS { IS_UNINITIALISED = 0, IS_FILE, IS_DIR };
@@ -142,8 +144,6 @@ struct cfs_inode {
      * or while performing a write operation */ 
     struct mutex io_mutex;
 };
-
-
 
 /*========= INLINE FUNCTIONS */
 

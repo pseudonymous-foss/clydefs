@@ -5,19 +5,43 @@
 
 static struct kmem_cache *chunk_pool = NULL;
 
-static __always_inline int __write_chunk_sync(struct block_device *bd, u64 tid, u64 nid, struct cfsd_inode_chunk *c, int chunk_off) 
+/**
+ * Computes the offset in bytes of a chunk identified by 
+ * supplied index 
+ * @param chunk_ndx index of the chunk 
+ * @return offset (in bytes) of chunk identified by index
+ */
+static __always_inline u64 cfsc_chunk_off(u64 chunk_ndx)
+{
+    return chunk_ndx * CHUNK_SIZE_DISK_BYTES;
+}
+
+/**
+ * Calculate offset (in bytes) of entry within a chunk given its 
+ * index into the ientry list. 
+ */
+static __always_inline u64 entry_off(u64 entry_ndx)
+{
+    return
+        /*offset of entry list within chunk*/
+        offsetof(struct cfsd_inode_chunk, entries) + 
+        /*offset of entry within list*/
+        (sizeof(struct cfsd_ientry) * entry_ndx);
+}
+
+static __always_inline int __write_chunk_sync(struct block_device *bd, u64 tid, u64 nid, struct cfsd_inode_chunk *c, u64 chunk_ndx) 
 {
     return cfsio_update_node_sync(
         bd, NULL, NULL, tid, nid, 
-        chunk_off * CHUNK_SIZE_DISK_BYTES, CHUNK_SIZE_BYTES, c
+        cfsc_chunk_off(chunk_ndx), CHUNK_SIZE_BYTES, c
     );
 }
 
-static __always_inline int __read_chunk_sync(struct block_device *bd, u64 tid, u64 nid, struct cfsd_inode_chunk *c, int chunk_off)
+static __always_inline int __read_chunk_sync(struct block_device *bd, u64 tid, u64 nid, struct cfsd_inode_chunk *c, u64 chunk_ndx)
 {
     return cfsio_read_node_sync(
         bd, NULL, NULL, 
-        tid, nid, chunk_off * CHUNK_SIZE_DISK_BYTES, 
+        tid, nid, cfsc_chunk_off(chunk_ndx), 
         CHUNK_SIZE_BYTES, c
     );
 }
@@ -32,20 +56,21 @@ static __always_inline u64 __entry_offset(u64 entry_ndx)
  * @param c the chunk whose header is to be written to disk 
  * @param itbl address of the node in which the inode table is 
  *             located.
- * @param chunk_off chunk offset of the chunk whose header is to 
- *                  be overridden. E.g. 0 => lead chunk
+ * @param chunk_ndx index into the list of chunks marking the 
+ *                  chunk whose header is to be overridden. E.g.
+ *                  0 => lead chunk
 */ 
 static __always_inline int __write_chunk_hdr_sync(
     struct block_device *bd,
     struct cfsd_inode_chunk *c,
     struct cfs_node_addr *itbl,
-    u64 chunk_off)
+    u64 chunk_ndx)
 {
     return cfsio_update_node_sync(
         bd, NULL, NULL, 
         itbl->tid, itbl->nid, 
         /*calculate the offset within the chunk marking the beginning of the cfsd_chunk_hdr*/
-        (chunk_off * CHUNK_SIZE_DISK_BYTES) + (CHUNK_SIZE_BYTES - sizeof(struct cfsd_chunk_hdr)), 
+        cfsc_chunk_off(chunk_ndx) + (CHUNK_SIZE_BYTES - sizeof(struct cfsd_chunk_hdr)), 
         sizeof(struct cfsd_chunk_hdr),
         &c->hdr
     );
@@ -179,6 +204,16 @@ static __always_inline void chunk_mk_key(struct cfsd_ientry *search_key, struct 
     strcpy(search_key->name, d->d_name.name);
 }
 
+/**
+ * @param ret_ndx where to write the index in which the entry is 
+ *                found (if it is found)
+ * @param c the chunk in which to search for the entry 
+ * @param search_key a ientry holding the name of the entry to 
+ *                   search for.
+ * @pre search_key is initialised and holds a name and the 
+ *      length of the name
+ * @return FOUND on success, NOT_FOUND otherwise
+ */
 static int chunk_lookup(
     /*inspired by kernel's bsearch @ linux/bsearch.h */
     u64 *ret_ndx, 
@@ -386,7 +421,6 @@ int __must_check cfsc_ientry_find(
     struct cfsd_ientry search_key;          /*populated to function as the search key*/
     struct cfs_node_addr *itbl = NULL;      /*address of parent directory's inode table*/
     struct block_device *bd = NULL;         /*device holding the parent directory's inode table*/
-    u64 off;
     int retval;
     CFS_DBG(
         "called parent{ino:%lu, itbl_nid:%llu} search_dentry{%s}\n", 
@@ -398,24 +432,21 @@ int __must_check cfsc_ientry_find(
     CLYDE_ASSERT(parent != NULL);
     CLYDE_ASSERT(search_dentry != NULL);
 
+    /*reset search key*/
     ret_loc->chunk_ndx = 0;
-    ret_loc->chunk_off = 0;
+    ret_loc->ientry_ndx = 0;
 
     itbl = &parent->data;
     bd = parent->vfs_inode.i_sb->s_bdev;
-    off = 0; 
 
     /*populate 'search_key' to make it searchable*/
     chunk_mk_key(&search_key, search_dentry);
 
 read_chunk:
     cfsi_i_wlock(parent);
-    retval = cfsio_read_node_sync(
-        bd, NULL, NULL,
-        itbl->tid, itbl->nid, 
-        off, 
-        sizeof(struct cfsd_inode_chunk), 
-        ret_buf
+    retval = __read_chunk_sync(
+        bd, itbl->tid, itbl->nid, 
+        ret_buf, ret_loc->chunk_ndx
     );
     cfsi_i_wunlock(parent);
     if (retval) {
@@ -429,17 +460,16 @@ read_chunk:
         );
     }
 
-    ret_loc->chunk_off = 0; /*chunk_lookup requires this to be set to 0*/
-    retval = chunk_lookup(&ret_loc->chunk_off, ret_buf, &search_key);
+    ret_loc->ientry_ndx = 0; /*chunk_lookup requires this to be set to 0*/
+    retval = chunk_lookup(&ret_loc->ientry_ndx, ret_buf, &search_key);
     if (retval == NOT_FOUND) {
         /*did not find the entry*/
         if(ret_buf->hdr.last_chunk) {
-            CFS_DBG("could not find entry, searched %llu chunks\n", ret_loc->chunk_ndx);
+            CFS_DBG("could not find entry, searched %llu chunks\n", ret_loc->chunk_ndx + 1);
             goto out; /*will return NOT_FOUND*/
         } else { /*advance to next*/
             CFS_DBG("entry not in this chunk, advancing to next\n");
             ret_loc->chunk_ndx++;
-            off += sizeof(struct cfsd_ientry) + CHUNK_TAIL_SLACK_BYTES;
             goto read_chunk;
         }
     } else { /*found an entry!*/
@@ -448,7 +478,7 @@ read_chunk:
 
 err_io: /*couldn't read chunk*/
     CFS_WARN("Failed while reading an inode table (trying to chunk[%llu], in node (%llu,%llu))\n", 
-             off / (sizeof(struct cfsd_ientry)+CHUNK_TAIL_SLACK_BYTES), itbl->tid, itbl->nid);
+             ret_loc->chunk_ndx, itbl->tid, itbl->nid);
 out:
     return retval;
 }
@@ -548,8 +578,9 @@ int cfsc_ientry_insert(struct cfs_inode *parent, struct cfs_inode *inode, struct
     struct cfsd_inode_chunk *chunk_curr = NULL;         /*ptr to chunk memory*/
     struct cfs_node_addr *itbl = NULL;                  /*reference to parent's inode table*/
     struct block_device *bd = NULL;                     /*block device to operate on*/
-    u64 off, ientry_ndx=0;
+    u64 chunk_ndx=0, ientry_ndx=0;
     struct cfsd_ientry tmp_ientry;
+    
     int retval;
 
     CFS_DBG("called...\n");
@@ -566,7 +597,6 @@ int cfsc_ientry_insert(struct cfs_inode *parent, struct cfs_inode *inode, struct
     itbl = &parent->data;
     bd = parent->vfs_inode.i_sb->s_bdev;
     CLYDE_ASSERT(bd != NULL);
-    off = 0;
 
     /*populate structure for writing*/
     cfs_ientry_init(&tmp_ientry, inode, inode_d);
@@ -576,7 +606,7 @@ read_chunk:
     retval = cfsio_read_node_sync(
         bd, NULL, NULL,
         itbl->tid, itbl->nid, 
-        off, 
+        cfsc_chunk_off(chunk_ndx), 
         CHUNK_SIZE_BYTES, 
         chunk_curr
     );
@@ -597,7 +627,7 @@ read_chunk:
         if (chunk_curr->hdr.entries_free == 0) {
             /*last entry in chunk, append inode table with a new 
               chunk and mark this chunk as no longer being the last one*/
-            retval = cfs_mk_chunk(bd,itbl, off + CHUNK_SIZE_DISK_BYTES);
+            retval = cfs_mk_chunk(bd,itbl, cfsc_chunk_off(chunk_ndx+1));
             if (retval) {
                 /*failed to append a new chunk to the now filled chunk, abort*/
                 goto out;
@@ -609,7 +639,7 @@ read_chunk:
         retval = cfsio_update_node_sync(
             bd,NULL,NULL,
             itbl->tid,itbl->nid,
-            off, sizeof(struct cfsd_inode_chunk), 
+            cfsc_chunk_off(chunk_ndx), sizeof(struct cfsd_inode_chunk), 
             chunk_curr
         );
         if (retval) {
@@ -619,13 +649,13 @@ read_chunk:
         }
 
         /*SUCCESS: update inode to reflect its disk location*/
-        inode->dsk_ientry_loc.chunk_ndx = off;
-        inode->dsk_ientry_loc.chunk_off = ientry_ndx;
+        inode->dsk_ientry_loc.chunk_ndx = chunk_ndx;
+        inode->dsk_ientry_loc.ientry_ndx = ientry_ndx;
         smp_mb();
         inode->on_disk = 1;
     } else {
         if (!chunk_curr->hdr.last_chunk) {
-            off += CHUNK_SIZE_DISK_BYTES;
+            chunk_ndx++;
             goto read_chunk;
         }
     }
@@ -657,7 +687,8 @@ int cfsc_ientry_update(struct cfs_inode *parent, struct cfs_inode *ci, struct de
     struct cfsd_inode_chunk *c = NULL;
     struct cfsd_ientry *entry = NULL;
     struct block_device *bd = NULL;
-
+    struct cfs_node_addr *parent_itbl = NULL;
+    int write_hdr = 0;
     int retval = 0;
 
     CLYDE_ASSERT(parent != NULL);
@@ -669,14 +700,16 @@ int cfsc_ientry_update(struct cfs_inode *parent, struct cfs_inode *ci, struct de
     /*can only update an entry already on disk, after all*/
     CLYDE_ASSERT(ci->on_disk);
 
+    parent_itbl = &parent->data;
+
     bd = parent->vfs_inode.i_sb->s_bdev;
     if (ci->sort_on_update) {
-        CFS_DBG("called parent{ino:%lu} ci{ino:%lu} i_dentry:%s\n", 
-                parent->vfs_inode.i_ino, ci->vfs_inode.i_ino, 
+        CFS_DBG("called parent{ino:%lu} ci{ino:%lu, i_size:%lld} i_dentry:%s\n", 
+                parent->vfs_inode.i_ino, ci->vfs_inode.i_ino, ci->vfs_inode.i_size,
                 i_dentry->d_name.name);
     } else {
-        CFS_DBG("called parent{ino:%lu} ci{ino:%lu}\n", 
-                parent->vfs_inode.i_ino, ci->vfs_inode.i_ino);
+        CFS_DBG("called parent{ino:%lu} ci{ino:%lu, i_size:%lld}\n", 
+                parent->vfs_inode.i_ino, ci->vfs_inode.i_ino, ci->vfs_inode.i_size);
     }
 
     c = cfsc_chunk_alloc();
@@ -688,8 +721,8 @@ int cfsc_ientry_update(struct cfs_inode *parent, struct cfs_inode *ci, struct de
 
     cfsi_i_wlock(parent);
     retval = __read_chunk_sync(
-        bd, ci->data.tid, ci->data.nid, 
-        c, ci->dsk_ientry_loc.chunk_off
+        bd, parent_itbl->tid, parent_itbl->nid, 
+        c, ci->dsk_ientry_loc.chunk_ndx
     );
     if (retval) {
         CFS_DBG("Failed to read the specified chunk in which the entry resides\n");
@@ -698,7 +731,8 @@ int cfsc_ientry_update(struct cfs_inode *parent, struct cfs_inode *ci, struct de
     }
 
     /*Update ientry*/
-    entry = &c->entries[ci->dsk_ientry_loc.chunk_off];
+    entry = &c->entries[ci->dsk_ientry_loc.ientry_ndx];
+    CFS_DBG("REMOVE: entry for ino(%lu) from disk  entry{nlen:%u, name:%s}\n", ci->vfs_inode.i_ino, le16_to_cpu(entry->nlen), entry->name);
     spin_lock(&ci->vfs_inode.i_lock);
     __copy2d_inode(entry, ci);
     if (ci->sort_on_update) {
@@ -712,27 +746,40 @@ int cfsc_ientry_update(struct cfs_inode *parent, struct cfs_inode *ci, struct de
         entry->nlen = cpu_to_le16((u16)d->d_name.len);
 
         cfsc_chunk_sort(c);
+        write_hdr = 1;
     }
     spin_unlock(&ci->vfs_inode.i_lock);
 
-    /*write the updated entry back to disk*/
-    retval = cfsio_update_node_sync(
-        bd, NULL, NULL, 
-        ci->data.tid, ci->data.nid, 
-        __entry_offset(ci->dsk_ientry_loc.chunk_off), 
-        sizeof(entry), 
-        entry
+
+    CFS_DBG("FIXME: make this fnc only write parts of the chunk (no sort: just entry, sort: entry + hdr)");
+    retval = __write_chunk_sync(bd, /*write back entire chunk -- inefficient*/
+            parent_itbl->tid, parent_itbl->nid, 
+            c, ci->dsk_ientry_loc.chunk_ndx
+    );
+
+    /*write entry*/
+    cfsio_update_node_sync(
+        bd, NULL, NULL,
+        parent_itbl->tid, parent_itbl->nid,
+        /*absolute offset (in bytes) of entry to overwrite*/
+        cfsc_chunk_off(ci->dsk_ientry_loc.chunk_ndx) + 
+        entry_off(ci->dsk_ientry_loc.ientry_ndx), 
+        sizeof(struct cfsd_ientry), entry
     );
     if (retval) {
         CFS_DBG("Failed to write entry down to chunk\n");
         retval = -EIO;
         goto err_io;
     }
-    /*write the chunk hdr back to disk*/
-    retval = __write_chunk_hdr_sync(bd, c, &ci->data, ci->dsk_ientry_loc.chunk_off);
-    if (retval) {
-        CFS_DBG("Failed to chunk hdr after changing its contents\n");
-        BUG();
+
+    /*write chunk hdr (if necessary)*/
+    if (write_hdr) {
+        /*write the chunk hdr back to disk*/
+        retval = __write_chunk_hdr_sync(bd, c, &ci->data, ci->dsk_ientry_loc.chunk_ndx);
+        if (retval) {
+            CFS_DBG("Failed to chunk hdr after changing its contents\n");
+            BUG();
+        }
     }
     /*success, fall through*/
 err_io:
@@ -769,7 +816,7 @@ int cfsc_ientry_delete(struct cfs_inode *parent, struct cfs_inode *ci)
     cfsi_i_wlock(parent);
     retval = __read_chunk_sync(
         bd, ci->data.tid, ci->data.nid, 
-        c, ci->dsk_ientry_loc.chunk_off
+        c, ci->dsk_ientry_loc.chunk_ndx
     );
     if (retval) {
         CFS_DBG("Failed to read the specified chunk in which the entry resides\n");
@@ -778,12 +825,12 @@ int cfsc_ientry_delete(struct cfs_inode *parent, struct cfs_inode *ci)
     }
 
     /*remove ientry*/
-    CLYDE_ASSERT( ((u8)255U) >= (u8)ci->dsk_ientry_loc.chunk_off); /*FIXME remove*/
-    cfsc_chunk_entry_delete(c, ci->dsk_ientry_loc.chunk_off);
+    CLYDE_ASSERT( ((u8)255U) >= (u8)ci->dsk_ientry_loc.chunk_ndx); /*FIXME remove*/
+    cfsc_chunk_entry_delete(c, ci->dsk_ientry_loc.ientry_ndx);
     cfsc_chunk_sort(c);
 
     /*write the chunk hdr back to disk*/
-    retval = __write_chunk_hdr_sync(bd, c, &ci->data, ci->dsk_ientry_loc.chunk_off);
+    retval = __write_chunk_hdr_sync(bd, c, &ci->data, ci->dsk_ientry_loc.chunk_ndx);
     if (retval) {
         CFS_DBG("Failed to chunk hdr after changing its contents\n");
         BUG();
@@ -811,14 +858,14 @@ int cfsc_mk_itbl_node(u64 *ret_itbl_nid, struct block_device *bd, u64 tid)
     );
 }
 
-int cfsc_write_chunk_sync(struct block_device *bd, u64 tid, u64 nid, struct cfsd_inode_chunk *c, int chunk_off) 
+int cfsc_write_chunk_sync(struct block_device *bd, u64 tid, u64 nid, struct cfsd_inode_chunk *c, u64 chunk_ndx) 
 {
-    return __write_chunk_sync(bd, tid, nid, c, chunk_off);
+    return __write_chunk_sync(bd, tid, nid, c, chunk_ndx);
 }
 
-int cfsc_read_chunk_sync(struct block_device *bd, u64 tid, u64 nid, struct cfsd_inode_chunk *c, int chunk_off)
+int cfsc_read_chunk_sync(struct block_device *bd, u64 tid, u64 nid, struct cfsd_inode_chunk *c, u64 chunk_ndx)
 {
-    return __read_chunk_sync(bd, tid, nid, c, chunk_off);
+    return __read_chunk_sync(bd, tid, nid, c, chunk_ndx);
 }
 
 int cfsc_init(void)
