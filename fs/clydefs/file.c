@@ -5,32 +5,6 @@
 const struct file_operations cfs_file_ops;
 const struct file_operations cfs_dir_file_ops;
 
-/**
- * Given a file pointer, find and return the parent inode.
- * @note not sure this method of getting the inode of another FS 
- *       works or is advisable, for that matter.
- * @return ino of parent directory
- */
-static u64 get_parent_ino(struct file *filp)
-{
-    struct dentry *d = NULL;
-    struct dentry *d_parent = NULL;
-    u64 ino;
-
-    CLYDE_ASSERT(filp != NULL);
-
-    d = dget(filp->f_path.dentry);
-    CLYDE_ASSERT(d != NULL);
-    d_parent = dget(d->d_parent);
-    CLYDE_ASSERT(d_parent != NULL);
-    dput(d);
-
-    ino = d_parent->d_inode->i_ino; /*FIXME: not getting a reference to the inode, could disappear*/
-    
-    dput(d_parent);
-    return ino;
-}
-
 /** 
  * Called when the last reference to an open file is closed. 
  */ 
@@ -126,40 +100,6 @@ static int cfs_readdir(struct file *filp, void *dirent, filldir_t filldir)
         retval = -ENOMEM;
         goto err_alloc;
     }
-
-    #if 0
-    if (entry_ndx == 0 /*< 0*/)
-    { /*starting directory listing, fill entries for '.' and '..'*/
-        struct inode *dir_inode = filp->f_inode;
-
-        if (1 && entry_ndx == -2) {
-            retval = filldir(dirent, ".", 1, -2, dir_inode->i_ino, DT_DIR);
-            if (retval) {
-                retval = 0;
-                goto out;
-            }
-            entry_num++; /* => entry_num == -1*/
-        }
-        if (1 && entry_ndx == -1) {
-            /*'..' => parent entry*/
-
-            if (unlikely(cfsi_is_root(dir_inode))) {
-                /*listing the root directory*/
-                retval = filldir(dirent, "..", 2, -1, get_parent_ino(filp), DT_DIR);
-            } else {
-                /*a subdirectory within the filesystem*/
-                retval = filldir(dirent, "..", 2, -1, CFS_INODE(dir_inode)->parent->vfs_inode.i_ino, DT_DIR);
-                
-            }
-
-            if (retval) {
-                    retval = 0;
-                    goto out;
-            }
-            entry_num++; /*=> entry_num == 0, => read real entries*/
-        }
-    }
-    #endif
 
     while(1) {
         u64 end_of_chunk;

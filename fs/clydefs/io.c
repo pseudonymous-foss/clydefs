@@ -245,7 +245,6 @@ static void __dealloc_bio(struct bio *b)
     CFS_DBG("%s -- bio->bio_cnt (get/put var): %d\n", __FUNCTION__, atomic_read(&b->bi_cnt));
     CLYDE_ASSERT( atomic_read(&b->bi_cnt) == 1);
     bio_put(b);
-    
 }
 
 /** 

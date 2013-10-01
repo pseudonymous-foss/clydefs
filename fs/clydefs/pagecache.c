@@ -12,68 +12,7 @@ typedef enum {
     RT_PAGE_RWU,
 } read_type_t;
 
-#if 0
-struct page_req
-{
 
-    struct inode *inode;
-    unsigned expected_pages;
-
-};
-
-static void __page_req_init(struct page_req *r, unsigned expected_pages, struct inode *i)
-{
-    r->inode = i;
-    r->expected_pages = expected_pages;
-}
-
-static int readpage_strip(void *data, struct page *p)
-{
-    /*struct page_collect *pcol = data;*/
-    struct page_req *r = data;
-    struct inode *i = r->inode;
-    loff_t i_size = i_size_read(i);
-    struct cfs_inode *ci = CFS_INODE(i);
-    /*last page that could be mapped to this file*/
-    pgoff_t end_ndx = i_size >> PAGE_CACHE_SHIFT;
-    size_t len;
-    int retval;
-
-    /*require page to be locked and containing stale data*/
-    BUG_ON(!PageLocked(p));
-    if (PageUptodate(p)){
-        CLYDE_ERR("PageUptodate true for (ino: 0x%lx, p->index: 0x%lx)\n", r->inode->i_ino, p->index);
-        BUG();
-    }
-    if (p->index < end_ndx) {
-        /*not last page, read it all*/
-        len = PAGE_CACHE_SIZE;
-    } else if (p->index == end_ndx) {
-        /*last page, figure out how many remaining 
-          bytes there is to read*/
-        len = i_size & ~PAGE_CACHE_MASK;
-    } else {
-        /*out of bounds*/
-        len = 0;
-    }
-
-    if (!len) {
-        /*out-of bounds*/
-        clear_highpage(p);
-        SetPageUptodate(p);
-        if (PageError(p)) {
-            ClearPageError(p);
-        }
-    }
-}
-
-
-static int cfs_readpages(struct file *f, struct address_space *mapping, 
-                         struct list_head *pages, unsigned nr_pages)
-{
-    return -1;
-}
-#endif
 
 /** 
  * Calculates number of bytes to read/write based on the 
@@ -347,13 +286,6 @@ static int cfsp_aopi_writepage(struct page *p, struct writeback_control *wbc)
     off = p->index >> PAGE_CACHE_SHIFT;
 
     BUG_ON(!PageLocked(p));
-    #if 0
-    /*This will fail if I initiate a write against a new, zero-byte file.*/
-    if (PageUptodate(p)){
-        CLYDE_ERR("PageUptodate true for (ino: 0x%lx, p->index: 0x%lx)\n", i->i_ino, p->index);
-        BUG();
-    }
-    #endif 
     len = page_ndx_to_bytes(p);
 
     p_addr = kmap(p);
