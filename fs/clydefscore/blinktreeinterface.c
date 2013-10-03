@@ -1,6 +1,11 @@
 #include "blinktreeinterface.h"
 #include "blinktree.h"
 
+/*Size of each node being allocated for the tree, this is 
+  meant as a temporary measure in lieu of an actual allocation
+  system.*/
+#define NODE_ALLOC_SIZE 1024u*1024u*4u
+
 /* 
  *  FIXME:
  *  ------
@@ -43,19 +48,20 @@ static int blinktreeinterface_node_read(u64 tid, u64 nid, u64 offset, u64 len, v
     struct btd *db = NULL;
     int retval;
 
-    /*FIXME assuming single data node of 1MB size*/
+    /*FIXME assuming single data node of NODE_ALLOC_SIZE size*/
     retval = blinktree_lookup(&db, tid, nid);
     if ( unlikely(db == NULL) )
         return retval;
 
     if ((offset < db->num_bytes) && (len <= (db->num_bytes - offset))) {
-        /*read request within the 1MB data range*/
+        /*read request within the NODE_ALLOC_SIZE data range*/
         u8 *data_block = ((u8*)db->data) + offset;
         u8 *buf = ((u8*)data);
         memcpy(buf, data_block, len);
         return 0;
     } else {
-        printk("CANNOT SUPPORT READS OUTSIDE THE RANGE OF 1MB\n");
+        pr_emerg("CANNOT SUPPORT READS OUTSIDE THE RANGE (%db => %dkb) [attempted to read %llub from offset %llub]\n",
+                 NODE_ALLOC_SIZE, NODE_ALLOC_SIZE/1024, len, offset);
         BUG();
     }
 }
@@ -65,19 +71,20 @@ static int blinktreeinterface_node_write(u64 tid, u64 nid, u64 offset, u64 len, 
     struct btd *db = NULL;
     int retval;
 
-    /*FIXME assuming single data node of 1MB size*/
+    /*FIXME assuming single data node of NODE_ALLOC_SIZE size*/
     retval = blinktree_lookup(&db, tid, nid);
     if ( unlikely(db == NULL) )
         return -ENOENT;
 
     if ((offset < db->num_bytes) && (len <= (db->num_bytes - offset))) {
-        /*read request within the 1MB data range*/
+        /*read request within the NODE_ALLOC_SIZE data range*/
         u8 *buf = ((u8*)data);
         u8 *data_block = ((u8*)db->data) + offset;
         memcpy(data_block, buf, len);
         return 0;
     } else {
-        printk("CANNOT SUPPORT READS OUTSIDE THE RANGE OF 1MB\n");
+        pr_emerg("CANNOT SUPPORT WRITES OUTSIDE THE RANGE (%db => %dkb) [attempted to write %llub from offset %llub]\n",
+                 NODE_ALLOC_SIZE, NODE_ALLOC_SIZE/1024, len, offset);
         BUG();
     }
 }
@@ -85,25 +92,25 @@ static int blinktreeinterface_node_write(u64 tid, u64 nid, u64 offset, u64 len, 
 static int blinktreeinterface_node_insert(u64 tid, u64 *nid)
 { /*implements treeinterface->node_insert*/
 
-    /*FIXME assuming single data node of 1MB size*/
+    /*FIXME assuming single data node of NODE_ALLOC_SIZE size*/
     u64 tmp;
     int retval = 0;
     struct btd *db = NULL;
-    printk("blinktreeinterface_node_insert => 1\n");
-    if ( (retval=data_block_alloc(&db, 1024u*1024u)) ) {
+    pr_debug("blinktreeinterface_node_insert => 1\n");
+    if ( (retval=data_block_alloc(&db, NODE_ALLOC_SIZE)) ) {
         pr_warn("insert: failed to allocate data block\n");
         goto err_data_alloc;
     }
-    printk("blinktreeinterface_node_insert => 2\n");
-    memset(db->data,0,1024); /*clear data*/
-    printk("blinktreeinterface_node_insert => 3\n");
+    pr_debug("blinktreeinterface_node_insert => 2\n");
+    memset(db->data,0,NODE_ALLOC_SIZE); /*clear data*/
+    pr_debug("blinktreeinterface_node_insert => 3\n");
     tmp = nidcnt_inc_get();
-    printk("blinktreeinterface_node_insert => 4\n");
+    pr_debug("blinktreeinterface_node_insert => 4\n");
     if ( (retval=blinktree_node_insert(tid,tmp,db)) ) {
         pr_warn("insert: insertion failed! tid[%llu], nid[%llu]\n",tid,tmp);
         goto err_insert;
     }
-    printk("blinktreeinterface_node_insert => 5(done)\n");
+    pr_debug("blinktreeinterface_node_insert => 5(done)\n");
 
     /* success */
     *nid = tmp;
