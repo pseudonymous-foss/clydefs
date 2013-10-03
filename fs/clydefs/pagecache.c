@@ -101,7 +101,7 @@ static int cfsp_readpage(struct page *p, read_type_t rwu)
     atomic_inc(&csb->pending_io_ops);
 
     /*get offset of request in bytes*/
-    off = p->index >> PAGE_CACHE_SHIFT;
+    off = p->index << PAGE_CACHE_SHIFT;
     
     __dbg_page_status(p);
 
@@ -159,6 +159,25 @@ static int cfsp_aopi_readpage(struct file *f, struct page *p)
     return cfsp_readpage(p, RT_PAGE_READ);
 }
 
+/**
+ * 
+ * @param f the file for which a range is to be written
+ * @param mapping address space associated the file (and by 
+ *                extension, the inode)
+ * @param off offset into file's address space, in bytes
+ * @param len length of write
+ * @param flags a field for AOP_FLAG_XXX values, described in 
+ *              include/linux/fs.h
+ * @param pagep should be assigned the page chosen for the 
+ *              coming write.
+ * @param fsdata optional, additional data to be passed along 
+ *               to .write_end
+ * 
+ * @return 0 on success; error otherwise (write won't proceed 
+ *         then)
+ * @post *pagep points to the page selected for the write (must 
+ *       be locked)
+ */
 static int cfs_write_begin(struct file *f, struct address_space *mapping, loff_t off, unsigned len, unsigned flags, struct page **pagep, void **fsdata)
 {
     /* 
@@ -283,7 +302,7 @@ static int cfsp_aopi_writepage(struct page *p, struct writeback_control *wbc)
     atomic_inc(&csb->pending_io_ops);
 
     /*get offset of request in bytes*/
-    off = p->index >> PAGE_CACHE_SHIFT;
+    off = p->index << PAGE_CACHE_SHIFT;
 
     BUG_ON(!PageLocked(p));
     len = page_ndx_to_bytes(p);
