@@ -19,31 +19,9 @@ static int cfs_file_release(struct inode *inode, struct file *filp)
 	return 0;
 }
 
-/**
- * Flush a range of a file's contents to disk and update inode 
- * to reflect any changes. 
- */
-static int cfs_file_fsync(struct file *filp, loff_t start, loff_t end,
-			    int datasync)
-{
-	struct inode *inode = filp->f_mapping->host;
-	int ret;
-
-    CFS_DBG("called\n");
-
-	ret = filemap_write_and_wait_range(inode->i_mapping, start, end);
-	if (ret)
-		return ret;
-
-	mutex_lock(&inode->i_mutex);
-	ret = sync_inode_metadata(filp->f_mapping->host, 1);
-	mutex_unlock(&inode->i_mutex);
-	return ret;
-}
-
-/**
- * Called by 'fsync' system call to flush a file's contents to 
- * disk. 
+/** 
+ * Called when file usage is decremented, up to the FS to decide
+ * what to do, if anything. 
  */
 static int cfs_file_flush(struct file *file, fl_owner_t id)
 {
@@ -170,7 +148,7 @@ const struct file_operations cfs_file_ops = {
     .splice_write = generic_file_splice_write,
 
     .release = cfs_file_release,
-    .fsync = cfs_file_fsync,
+    .fsync = generic_file_fsync,
     .flush = cfs_file_flush,
 };
 
