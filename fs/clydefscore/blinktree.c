@@ -139,7 +139,7 @@ static __always_inline void set_tree_root(u64 tid, struct btn *new_root)
         }
     }
     /*err out*/
-    pr_debug("\n\nset_tree_root: could not find any tree with id(%llu)!\n", tid);
+    pr_emerg("\n\nset_tree_root: could not find any tree with id(%llu)!\n", tid);
     BUG();
 }
 
@@ -604,7 +604,7 @@ static __always_inline struct btn *node_split(struct tree *tree, struct btn *nod
      *   old_node's sibling now points to node_right
      */
     struct btn *node_right = NULL;
-    printk("inside node_split (is_root:%u)\n", is_root);
+    pr_debug("inside node_split (is_root:%u)\n", is_root);
     CLYDE_ASSERT(tree != NULL);
     CLYDE_ASSERT(node != NULL);
     /*'node' need to be protected from modications while we copy data from it*/
@@ -613,12 +613,12 @@ static __always_inline struct btn *node_split(struct tree *tree, struct btn *nod
       avoid subsequent compaction*/
     CLYDE_ASSERT( node->numkeys >= (tree->k*2 + 1) );
 
-    printk("\t\tbefore make_node (node_right points to: %p)\n", node_right);
+    pr_debug("\t\tbefore make_node (node_right points to: %p)\n", node_right);
     if (make_node(tree, &node_right, acquire_nid(), node->is_leaf))
         return NULL;
-    printk("\t\tafter make_node (node_right points to: %p), (node_right->lock points to %p)\n", node_right, &node_right->lock);
-    printk("\t\tbefore memcopying node elements\n");
-    printk("\t\tbefore splitting node:\n\t\t\t");
+    pr_debug("\t\tafter make_node (node_right points to: %p), (node_right->lock points to %p)\n", node_right, &node_right->lock);
+    pr_debug("\t\tbefore memcopying node elements\n");
+    pr_debug("\t\tbefore splitting node:\n\t\t\t");
     blinktree_print_node(node,0);
 
     /*copy k keys from ndx k onwards (ergo, skipping k+1 elems)*/ 
@@ -628,15 +628,15 @@ static __always_inline struct btn *node_split(struct tree *tree, struct btn *nod
     memcpy(node_right->child_nodes, 
            &node->child_nodes[tree->k+1], 
            sizeof(void*)*tree->k);
-    printk("\t\t_after_ memcpy - node_right->lock points to %p\n", &node_right->lock);
+    pr_debug("\t\t_after_ memcpy - node_right->lock points to %p\n", &node_right->lock);
 
-    printk("\t\tbefore locking node_right splinlock\n");
+    pr_debug("\t\tbefore locking node_right splinlock\n");
     /*when splitting we need to insert a new entry for the 
       resulting node_right into a parent node. We need to
       ensure the high-key which we insert indeed matches
       the highest value in the node at the time.*/
     NODE_LOCK(node_right);
-    printk("\t\t__after__ locking node_right splinlock\n");
+    pr_debug("\t\t__after__ locking node_right splinlock\n");
     node_right->sibling = node->sibling;
     node->sibling = node_right;
 
@@ -649,9 +649,9 @@ static __always_inline struct btn *node_split(struct tree *tree, struct btn *nod
      */
     smp_mb();
     node->numkeys = tree->k+1;
-    printk("\t\tafter splitting node:\n\t\t\tnode: ");
+    pr_debug("\t\tafter splitting node:\n\t\t\tnode: ");
     blinktree_print_node(node,0);
-    printk("\n\t\t\tnode: ");
+    pr_debug("\n\t\t\tnode: ");
     blinktree_print_node(node_right,0);
     return node_right;
 }
@@ -679,14 +679,14 @@ static noinline struct btn *find_leaf(struct btn *root, u64 key, struct stack *p
     */
     u8 i, advance_down;
     struct btn *c = root;
-    printk("find_leaf begin\n");
+    pr_debug("find_leaf begin\n");
     CLYDE_ASSERT(root != NULL);
     CLYDE_ASSERT(path != NULL);
 
     if (c->is_leaf)
         return c;
 
-    printk("\tbefore while (!c->is_leaf) loop\n");
+    pr_debug("\tbefore while (!c->is_leaf) loop\n");
     do {
         advance_down = i = 0;
 
@@ -706,12 +706,12 @@ static noinline struct btn *find_leaf(struct btn *root, u64 key, struct stack *p
         if ( likely(advance_down) ) {
             /*found the right index, continue down this way*/
             if (likely(!c->is_leaf)) {
-                /*printk("----------pushing node onto tree_path stack\n");
-                printk("\t\t\tnodedbg: nid(%llu)\n", c->nid);
-                printk("\t\t\tnodedbg: is_leaf(%u)\n", c->is_leaf);
-                printk("\t\t\tnodedbg: numkeys(%u)\n", c->numkeys);
-                printk("\t\t\tnodedbg: lock addr(%p)\n", c->lock);
-                printk("\t\t\tnodedbg: is lock null ? (%d)\n", (c->lock==NULL));*/
+                /*pr_debug("----------pushing node onto tree_path stack\n");
+                pr_debug("\t\t\tnodedbg: nid(%llu)\n", c->nid);
+                pr_debug("\t\t\tnodedbg: is_leaf(%u)\n", c->is_leaf);
+                pr_debug("\t\t\tnodedbg: numkeys(%u)\n", c->numkeys);
+                pr_debug("\t\t\tnodedbg: lock addr(%p)\n", c->lock);
+                pr_debug("\t\t\tnodedbg: is lock null ? (%d)\n", (c->lock==NULL));*/
                 clydefscore_stack_push(path, c);
             }
             c = (struct btn*) c->child_nodes[i];
@@ -719,7 +719,7 @@ static noinline struct btn *find_leaf(struct btn *root, u64 key, struct stack *p
             /*none of the child nodes actually matched, use link ptr*/
             /*node must've been split, advance to sibling, if possible, otherwise err out*/
             if ( c->sibling == NULL ) {
-                printk("blinktree,findleaf: exiting with null for sibling\n");
+                pr_debug("blinktree,findleaf: exiting with null for sibling\n");
                 goto no_node;
             }
             c = c->sibling;
@@ -728,7 +728,7 @@ static noinline struct btn *find_leaf(struct btn *root, u64 key, struct stack *p
     } while (!c->is_leaf);
 
 
-    printk("\tafter while (!c->is_leaf) loop (SUCCESS!)\n");
+    pr_debug("\tafter while (!c->is_leaf) loop (SUCCESS!)\n");
     return c;
 no_node:
     preempt_enable();
@@ -756,7 +756,7 @@ static noinline struct btn *find_leaf_no_path(struct tree *tree, u64 key)
     */
     u8 i, advance_down;
     struct btn *c;
-    printk("find_leaf_no_path begin\n");
+    pr_debug("find_leaf_no_path begin\n");
     CLYDE_ASSERT(tree != NULL);
     CLYDE_ASSERT(tree->root != NULL);
 
@@ -764,7 +764,7 @@ static noinline struct btn *find_leaf_no_path(struct tree *tree, u64 key)
     if (c->is_leaf)
         return c;
 
-    printk("\tbefore while (!c->is_leaf) loop\n");
+    pr_debug("\tbefore while (!c->is_leaf) loop\n");
     do {
         advance_down = i = 0;
 
@@ -788,7 +788,7 @@ static noinline struct btn *find_leaf_no_path(struct tree *tree, u64 key)
             /*none of the child nodes actually matched, use link ptr*/
             /*node must've been split, advance to sibling, if possible, otherwise err out*/
             if ( c->sibling == NULL ) {
-                printk("blinktree,findleaf_no_path: exiting with null for sibling\n");
+                pr_debug("blinktree,findleaf_no_path: exiting with null for sibling\n");
                 goto no_node;
             }
             c = c->sibling;
@@ -797,7 +797,7 @@ static noinline struct btn *find_leaf_no_path(struct tree *tree, u64 key)
     } while (!c->is_leaf);
 
 
-    printk("\tafter while (!c->is_leaf) loop (SUCCESS!)\n");
+    pr_debug("\tafter while (!c->is_leaf) loop (SUCCESS!)\n");
     return c;
 no_node:
     preempt_enable();
@@ -886,7 +886,7 @@ static __always_inline void move_right(struct btn **node, u64 key)
     CLYDE_ASSERT((*node) != NULL);
     CLYDE_ASSERT(node_is_locked(*node));
 
-    printk("inside move_right - after assert checks\n");
+    pr_debug("inside move_right - after assert checks\n");
 
     if (unlikely((*node)->numkeys == 0))
         return;
@@ -894,7 +894,7 @@ static __always_inline void move_right(struct btn **node, u64 key)
     next_node = *node; /*for first loop iteration*/
     
     do {
-        printk("\t\tmove_right loop iter\n");
+        pr_debug("\t\tmove_right loop iter\n");
         *node = next_node;
         next_node = NULL;
         for (i=0; i < (*node)->numkeys; i++) {
@@ -905,7 +905,7 @@ static __always_inline void move_right(struct btn **node, u64 key)
         }
 
         /*no subtree was found in this node, try sibling*/
-        printk("\t\tmove_right: no next_node found\n...");
+        pr_debug("\t\tmove_right: no next_node found\n...");
         
         if ((*node)->sibling) {
             next_node = (*node)->sibling;
@@ -915,8 +915,8 @@ static __always_inline void move_right(struct btn **node, u64 key)
             NODE_UNLOCK((*node));
         }
         if (!(*node)->sibling && !(*node)->is_leaf) {
-            printk("move_right: (*node)->sibling==NULL, reached the last internal node without finding");
-            printk("a key greater than '%llu' (should ALWAYS have an inf key as the rightmost key for internal nodes)\n", key);
+            pr_emerg("move_right: (*node)->sibling==NULL, reached the last internal node without finding");
+            pr_emerg("a key greater than '%llu' (should ALWAYS have an inf key as the rightmost key for internal nodes)\n", key);
             BUG();
         }
     } while (next_node);
@@ -953,12 +953,12 @@ static __always_inline struct btn* patch_parents_children_entries(struct btn *pa
    CLYDE_ASSERT(node_is_locked(parent_start));
    CLYDE_ASSERT(node_is_locked(node_left));
    CLYDE_ASSERT(node_is_locked(node_right));
-   printk("inside patch_parents_children_entries\n\t\tbefore assignments\n");
+   pr_debug("inside patch_parents_children_entries\n\t\tbefore assignments\n");
 
    node_parent = NULL;
    cn = parent_start;
 
-   printk("\t\tbefore grabbing first nl_p\n");
+   pr_debug("\t\tbefore grabbing first nl_p\n");
    hk_nr = node_high_key(node_right); /*temporary val, is equal to node_left's old high key*/
    /*find old node entry, will have old node's high key which is new node's hk*/
    while (1) {
@@ -978,10 +978,10 @@ static __always_inline struct btn* patch_parents_children_entries(struct btn *pa
            NODE_LOCK(cn);
        }else{
            u8 i;
-           pr_err(" (nl_p) proceded through all internal nodes until hitting the last node - should NEVER happen (rightmost node should have inf as last key)\n");
+           pr_emerg(" (nl_p) proceded through all internal nodes until hitting the last node - should NEVER happen (rightmost node should have inf as last key)\n");
            for (i=0;i<pn->numkeys; i++)
-               printk("k(%llu), ", pn->child_keys[i]);
-           printk("\n");
+               pr_emerg("k(%llu), ", pn->child_keys[i]);
+           pr_emerg("\n");
            BUG();
        }
        NODE_UNLOCK(pn);
@@ -992,15 +992,15 @@ static __always_inline struct btn* patch_parents_children_entries(struct btn *pa
    /*old node's high key will always be the hk of the new rightmost node, => get the hk which 
      the parent referenced the old node by.*/
    hk_nr = node_keyof_node(node_parent, node_left);
-   printk("determined high keys: nl_hk(%llu), nr_hk(%llu)\n", hk_nl, hk_nr);
+   pr_debug("determined high keys: nl_hk(%llu), nr_hk(%llu)\n", hk_nl, hk_nr);
 
-   printk("\t\tbefore grabbing first nr_p\n");
+   pr_debug("\t\tbefore grabbing first nr_p\n");
    /*find node into which the entry for node_right needs to be inserted*/
    
 
-   printk("\t\tbefore checking if nl_p and nl_r are set\n");
+   pr_debug("\t\tbefore checking if nl_p and nl_r are set\n");
    if ( !node_parent ) {
-       printk("blinktree,patch_parents_children_entries: did not find 'both' parents\n");
+       pr_emerg("blinktree,patch_parents_children_entries: did not find 'both' parents\n");
        BUG();
    }
    
@@ -1009,14 +1009,14 @@ static __always_inline struct btn* patch_parents_children_entries(struct btn *pa
    /*to achieve consistency, the entry for node_right needs to be inserted before the 
      entry for node_left is adjusted to a lower high-key. Otherwise certain keys would
      be unreachable for a moment => inconsistent tree*/
-   printk("\t\tbefore patching\n");
+   pr_debug("\t\tbefore patching\n");
    node_insert_entry(node_parent, hk_nr, node_right); /*can in itself trigger a new split*/
    nl_entry_ndx = node_indexof_node(node_parent, node_left);
    smp_mb();
    node_parent->child_keys[nl_entry_ndx] = hk_nl; /*update nl entry's hk to reflect what's left in nl node*/
 
 
-   printk("\t\tbefore unlocking\n");
+   pr_debug("\t\tbefore unlocking\n");
    NODE_UNLOCK(node_right);
    NODE_UNLOCK(node_left);
    
@@ -1061,7 +1061,7 @@ int blinktree_node_insert(u64 tid, u64 nid, void *data)
 
     CLYDE_ASSERT(nid != TREE_MAX_NID); /*reserved value, read definition*/
     
-    printk("before get_tree\n");
+    pr_debug("before get_tree\n");
     tree = get_tree(tid);
     if (unlikely(tree == NULL)) {
         /*No tree found by id 'tid'.*/
@@ -1071,13 +1071,13 @@ int blinktree_node_insert(u64 tid, u64 nid, void *data)
     CLYDE_ASSERT(tree->root != NULL);
     CLYDE_ASSERT(data != NULL);
 
-    printk("before clydefscore_stack_init\n");
+    pr_debug("before clydefscore_stack_init\n");
     if (clydefscore_stack_init(&tree_path, __BLINKTREE_EXPECTED_HEIGHT)) {
         retval |= TERR_ALLOC_FAILED; /* stack allocation failed */
         goto err_stack_alloc;
     }
 
-    printk("before find_leaf\n");
+    pr_debug("before find_leaf\n");
     node = find_leaf(tree->root, nid, &tree_path);
     if (node == NULL) {
         /*find_leaf got stuck somewhere on an internal node*/
@@ -1086,23 +1086,23 @@ int blinktree_node_insert(u64 tid, u64 nid, void *data)
         goto out;
     }
 
-    printk("after find_leaf (is lock contended?: %d)\n", node_is_locked(node));
+    pr_debug("after find_leaf (is lock contended?: %d)\n", node_is_locked(node));
     NODE_LOCK(node);
-    printk("before move_right\n");
+    pr_debug("before move_right\n");
     move_right(&node,nid);
 
-    printk("before blinktree_scanleaf\n");
+    pr_debug("before blinktree_scanleaf\n");
     if (blinktree_scanleaf(node, nid)){
         NODE_UNLOCK(node);
         retval = 0;
         goto out; /*nid already in tree*/
     }
 
-    printk("blinktree_insert: node_insert(node, %llu, data)\n", nid);
+    pr_debug("blinktree_insert: node_insert(node, %llu, data)\n", nid);
     node_insert_entry(node,nid,data);
 
 split_or_done:
-    printk("\t\tinside 'split_or_done'\n");
+    pr_debug("\t\tinside 'split_or_done'\n");
     
     if (likely(node->numkeys <= (tree->k * 2))) {
         /* 
@@ -1121,9 +1121,9 @@ split_or_done:
         
         /*empty stack=> root node (splitting the root is unique)*/
         u8 is_root = (clydefscore_stack_size(&tree_path) == 0);
-        printk("\t\t_after_ is_root assignment\n");
+        pr_debug("\t\t_after_ is_root assignment\n");
 
-        printk("\t\tbefore node_split\n");
+        pr_debug("\t\tbefore node_split\n");
         node_right = node_split(tree, node, is_root); 
         if (unlikely(node_right == NULL)) {
             pr_warn("blinktree_insert: unsafe insert requiring split failed, could not allocate new sibling node\n");
@@ -1140,21 +1140,21 @@ split_or_done:
          */
         if (likely(!is_root)) {
             struct btn *node_left = node;
-            printk("\t\tis_root check: node is NOT root\n");
-           /* printk("\t\t (!is_root) - stack size: %u\n", clydefscore_stack_size(&tree_path));
-            printk("\t\tbefore popping (parent)node\n");*/
+            pr_debug("\t\tis_root check: node is NOT root\n");
+           /* pr_debug("\t\t (!is_root) - stack size: %u\n", clydefscore_stack_size(&tree_path));
+            pr_debug("\t\tbefore popping (parent)node\n");*/
             node = (struct btn*)clydefscore_stack_pop(&tree_path);
-            /*printk("\t\t\tnodedbg: nid(%llu)\n", node->nid);
-            printk("\t\t\tnodedbg: is_leaf(%u)\n", node->is_leaf);
-            printk("\t\t\tnodedbg: numkeys(%u)\n", node->numkeys);
-            printk("\t\t\tnodedbg: lock addr(%p)\n", node->lock);
-            printk("\t\t\tnodedbg: is lock null ? (%d)\n", (node->lock==NULL));
-            printk("\t\tbefore locking (parent)node\n");*/
+            /*pr_debug("\t\t\tnodedbg: nid(%llu)\n", node->nid);
+            pr_debug("\t\t\tnodedbg: is_leaf(%u)\n", node->is_leaf);
+            pr_debug("\t\t\tnodedbg: numkeys(%u)\n", node->numkeys);
+            pr_debug("\t\t\tnodedbg: lock addr(%p)\n", node->lock);
+            pr_debug("\t\t\tnodedbg: is lock null ? (%d)\n", (node->lock==NULL));
+            pr_debug("\t\tbefore locking (parent)node\n");*/
             NODE_LOCK(node);
             /*have both parent (node) and child (node_left & node_right) locks.*/
-            printk("\t\tbefore patch_parent_children_entries nl_hk(%llu), nr_hk(%llu)\n", node_high_key(node_left), node_high_key(node_right));
+            pr_debug("\t\tbefore patch_parent_children_entries nl_hk(%llu), nr_hk(%llu)\n", node_high_key(node_left), node_high_key(node_right));
             node = patch_parents_children_entries(node, node_left, node_right);
-            printk("before goto split_or_done\n");
+            pr_debug("before goto split_or_done\n");
             /* 
              * block postcondition: retain lock for 'node' 
              */
@@ -1163,20 +1163,20 @@ split_or_done:
         } else {
             /*just split the root node, make a new root node*/
             struct btn *root = NULL;
-            printk("\t\tis_root check: node is root\n");
-            printk("\t\tbefore make_node\n");
+            pr_debug("\t\tis_root check: node is root\n");
+            pr_debug("\t\tbefore make_node\n");
             if (make_node(tree, &root, acquire_nid(), INTERNAL_NODE)) {
                 /*failed to create new node*/
-                printk("blinktree_insert: Failed to create new root node, presumably allocation failed.\n");
+                pr_debug("blinktree_insert: Failed to create new root node, presumably allocation failed.\n");
                 retval |= TERR_ALLOC_FAILED;
                 goto out;
             }
-            printk("\t\tbefore locking root->lock\n");
+            pr_debug("\t\tbefore locking root->lock\n");
             NODE_LOCK(root); /*required by node_insert, even if not strictly necessary*/
-            printk("\t\tbefore inserting elements into root\n");
+            pr_debug("\t\tbefore inserting elements into root\n");
             node_insert_entry(root, node_high_key(node), node);
             node_insert_entry(root, TREE_MAX_NID, node_right); /*Ensure any possible key can enter this sub-tree*/
-            printk("\t\tbefore updating root tree\n");
+            pr_debug("\t\tbefore updating root tree\n");
             TREE_LIST_LOCK();
             set_tree_root(tid,root);
             TREE_LIST_UNLOCK();
@@ -1250,24 +1250,24 @@ int blinktree_node_remove(u64 tid, u64 nid)
     }
     CLYDE_ASSERT(tree->root != NULL);
 
-    printk("before clydefscore_stack_init\n");
+    pr_debug("before clydefscore_stack_init\n");
     if (clydefscore_stack_init(&tree_path, __BLINKTREE_EXPECTED_HEIGHT)) {
         retval |= TERR_ALLOC_FAILED; /* stack allocation failed */
         goto err_stack_alloc;
     }
 
-    printk("before find_leaf\n");
+    pr_debug("before find_leaf\n");
     node = find_leaf(tree->root, nid, &tree_path);
     if (node == NULL) {
         /*find_leaf got stuck somewhere on an internal node*/
-        printk("blinktree_node_remove: find_leaf got stuck on an internal node and returned NULL\n");
+        pr_debug("blinktree_node_remove: find_leaf got stuck on an internal node and returned NULL\n");
         retval |= TERR_NO_SUCH_NODE; 
         goto out;
     }
 
-    printk("after find_leaf (is lock contended?: %d)\n", node_is_locked(node));
+    pr_debug("after find_leaf (is lock contended?: %d)\n", node_is_locked(node));
     NODE_LOCK(node);
-    printk("before move_right\n");
+    pr_debug("before move_right\n");
     move_right(&node,nid);
     /*FIXME: if this entry is data, I'd need to free the associated structure */
     if (node_remove_entry(node, nid) == NO_SUCH_ENTRY) {
@@ -1291,17 +1291,17 @@ static void blinktree_print_node(struct btn *node, int depth)
     d = depth + 1;
     if (node->is_leaf) {
         if(depth == 0)
-            printk("root-l: ");
+            pr_debug("root-l: ");
         else
-            printk("n-l(%u):", depth);
+            pr_debug("n-l(%u):", depth);
         for(i=0; i<node->numkeys; i++) {
-            printk("%llu, ", node->child_keys[i]);
+            pr_debug("%llu, ", node->child_keys[i]);
         }
     } else {
         if(depth == 0)
-            printk("  root: ");
+            pr_debug("  root: ");
         else
-            printk("n(%u): ", depth);
+            pr_debug("n(%u): ", depth);
         for(i=0; i < node->numkeys; i++) {
             blinktree_print_node(node->child_nodes[i], d);
         }
@@ -1320,24 +1320,24 @@ void dbg_blinktree_print_inorder(u64 tid)
     CLYDE_ASSERT(tree->root != NULL);
 
     blinktree_print_node(tree->root, 0);
-    printk("\n");
+    pr_debug("\n");
 }
 
 
 static void blinktree_get_node_keys(struct btn *node, struct stack *s)
 {
     int i;
-    printk("before if-check\n");
+    pr_debug("before if-check\n");
     if (node->is_leaf) {
-        /*printk("node->is_leaf => TRUE\n");*/
+        /*pr_debug("node->is_leaf => TRUE\n");*/
         for(i=node->numkeys-1; i >= 0; i--) {
-            /*printk("leaf iter\n");*/
+            /*pr_debug("leaf iter\n");*/
             clydefscore_stack_push(s,&(node->child_keys[i]));
         }
     } else {
-        /*printk("node->is_leaf => FALSE\n");*/
+        /*pr_debug("node->is_leaf => FALSE\n");*/
         for(i=node->numkeys-1; i >= 0; i--) {
-            /*printk("non-leaf iter\n");*/
+            /*pr_debug("non-leaf iter\n");*/
             blinktree_get_node_keys(node->child_nodes[i],s);
         }
     }
