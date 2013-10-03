@@ -581,7 +581,6 @@ static __always_inline int __write_inode_update(struct cfs_inode *ci, struct den
 { /*update the ientry of an already persisted inode*/
     CFS_DBG("called ci{ino:%lu}", ci->vfs_inode.i_ino);
     CLYDE_ASSERT(ci->on_disk);
-    WARN_ON(ci->dsk_ientry_loc.chunk_ndx == 0 && ci->dsk_ientry_loc.ientry_ndx == 0); /*not necessarily bad*/
     return cfsc_ientry_update(ci->parent, ci, i_dentry);
 }
 
@@ -955,6 +954,11 @@ out:
 }
 
 /* FILE INODE OPERATIONS */
+int cfs_vfsi_unlink(struct inode *dir, struct dentry *d)
+{
+    printk(KERN_EMERG "deletion of inodes not supported!!\n");
+    return -1;
+}
 
 int cfsi_init(void)
 {
@@ -972,6 +976,8 @@ const struct inode_operations cfs_dir_inode_ops = {
     .create = cfs_vfsi_create,
     .lookup = cfs_vfsi_lookup,
     .mkdir = cfs_vfsi_mkdir,
+    //.unlink =  FNC_HERE, /*remove inode specified by directory entry*/
+
     /*basic file & dir support*/
     /* .create =  FNC_HERE,*/
     /* .lookup =  FNC_HERE,*/
@@ -983,7 +989,7 @@ const struct inode_operations cfs_dir_inode_ops = {
 
     /*hard-link support*/
     /* .link =  FNC_HERE,*/
-    /* .unlink =  FNC_HERE,*/
+    
 
     /*symlink support*/
     /* .symlink =  FNC_HERE,*/
