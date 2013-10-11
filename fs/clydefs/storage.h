@@ -1,4 +1,0 @@
-#ifndef __CLYDEFS_STORAGE_H
-#define __CLYDEFS_STORAGE_H
-
-#endif __CLYDEFS_STORAGE_H
