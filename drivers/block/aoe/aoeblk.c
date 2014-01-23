@@ -29,6 +29,35 @@ module_param(aoe_maxsectors, int, 0644);
 MODULE_PARM_DESC(aoe_maxsectors,
 	"When nonzero, set the maximum number of sectors per I/O request");
 
+struct counter {
+    /*rollover every 1k*/
+    unsigned long count;
+    /*incremented at every rollover*/
+    unsigned long kcount;
+};
+
+struct counter req_counter;
+spinlock_t req_lock;
+static __always_inline void count_inc(struct counter *c)
+{
+    if ( unlikely(++c->count == 1000) ){
+        c->count = 0;
+        c->kcount++;
+    }
+}
+
+static struct timer_list tmr;
+unsigned long long req_siz;
+static void tmr_cb(unsigned long data) {
+    printk("aoe: requests %luk, %lu (avg siz: %llu)\n", req_counter.kcount, req_counter.count, req_siz);
+    req_siz = 0;
+    /*restart in 10 secs*/
+    if ( mod_timer(&tmr, jiffies + msecs_to_jiffies(10000)) ) {
+        printk("error initialising timer (mod_timer)\n");
+    }
+}
+
+
 static ssize_t aoedisk_show_state(struct device *dev,
 				  struct device_attribute *attr, char *page)
 {
@@ -196,11 +225,13 @@ aoeblk_request(struct request_queue *q)
 		pr_info_ratelimited("aoe: device %ld.%d is not up\n",
 			d->aoemajor, d->aoeminor);
 		while ((rq = blk_peek_request(q))) {
+            
 			blk_start_request(rq);
 			aoe_end_request(d, rq, 1);
 		}
 		return;
 	}
+    count_inc(&req_counter);
 	aoecmd_work(d);
 }
 
@@ -351,6 +382,12 @@ err:
 void
 aoeblk_exit(void)
 {
+    printk("Testing exiting\n");
+    while ( del_timer(&tmr) ) {
+        printk("waiting for timer...\n");
+        msleep(3000);
+    }
+
 	kmem_cache_destroy(buf_pool_cache);
 }
 
@@ -362,6 +399,11 @@ aoeblk_init(void)
 					   0, 0, NULL);
 	if (buf_pool_cache == NULL)
 		return -ENOMEM;
+
+    setup_timer( &tmr, tmr_cb, 0 );
+    if ( mod_timer(&tmr, jiffies + msecs_to_jiffies(10000)) ) {
+        printk("error initialising timer (mod_timer)\n");
+    }
 
 	return 0;
 }

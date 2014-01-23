@@ -66,5 +66,5 @@ int treeinterface_init(void)
  */
 void treeinterface_exit(void)
 {
-    return; /*nothing to do yet*/
+    return blinktree_treeinterface_exit();
 }

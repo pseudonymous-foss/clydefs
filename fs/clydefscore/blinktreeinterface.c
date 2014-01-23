@@ -1,3 +1,6 @@
+#include <linux/kernel.h>
+#include <linux/slab.h>
+
 #include "blinktreeinterface.h"
 #include "blinktree.h"
 
@@ -31,6 +34,76 @@ static __always_inline u64 nidcnt_inc_get(void)
     reserved_val = nidcnt++;
     spin_unlock(&nidcnt_lock);
     return reserved_val;
+}
+
+static u8 *disk[1500];
+static struct btd *disk_meta[1500];
+DEFINE_SPINLOCK(blk_alloc_lock);
+int nxt_blk_ndx = 0;
+int blocks = 0;
+
+static __always_inline void dealloc_disk(int i) {
+    while( --i >= 0 ) {
+        kfree(disk_meta[i]);
+        kfree(disk[i]);
+    }
+}
+
+static __always_inline int prealloc_disk(int prealloc_blocks)
+{
+    int i;
+    printk("prealloc_disk running..\n");
+
+    if (prealloc_blocks > 1500) {
+        pr_debug("cannot allocate more than 1500 blocks\n");
+        return 1;
+    }
+
+    /*zero out lists*/
+    memset(disk, 0, sizeof(u8 *)*1500);
+    memset(disk_meta, 0, sizeof(struct btd *)*1500);
+
+    for (i = 0; i < prealloc_blocks; i++) {
+
+        disk_meta[i] = (struct btd*)kmalloc(sizeof(struct btd), GFP_ATOMIC);
+        if(! disk_meta[i] )
+            goto unwind;
+
+        disk[i] = (u8*) kmalloc(sizeof(u8)*NODE_ALLOC_SIZE, GFP_ATOMIC);
+        disk_meta[i]->data = disk[i];
+        if(! disk[i]){
+            kfree(disk_meta[i]);
+            goto unwind;
+        }
+        disk_meta[i]->num_bytes = NODE_ALLOC_SIZE;
+    }
+    blocks = prealloc_blocks;
+    printk("prealloc successful, allocated %d blocks\n", i);
+    return 0;
+
+unwind:
+    pr_debug("Allocation of block#%d failed\n", i);
+    printk("prealloc_disk failed at block#%d\n", i);
+    dealloc_disk(i);
+    return 1;
+}
+
+
+static __always_inline int get_blk(struct btd **ret_blk)
+{
+    int ndx = 0;
+    CLYDE_ASSERT(ret_blk != NULL);
+    CLYDE_ASSERT(*ret_blk == NULL); /*ensure we're not losing a ptr*/
+
+    spin_lock(&blk_alloc_lock);
+    ndx = nxt_blk_ndx++;
+    if (unlikely(ndx >= blocks)) {
+        nxt_blk_ndx--;
+        return 1;
+    }
+    spin_unlock(&blk_alloc_lock);
+    *ret_blk = disk_meta[ndx];
+    return 0;
 }
 
 #if 0
@@ -97,10 +170,11 @@ static int blinktreeinterface_node_insert(u64 tid, u64 *nid)
     int retval = 0;
     struct btd *db = NULL;
     pr_debug("blinktreeinterface_node_insert => 1\n");
-    if ( (retval=data_block_alloc(&db, NODE_ALLOC_SIZE)) ) {
+    if ( (retval=get_blk(&db)) ) {
         pr_warn("insert: failed to allocate data block\n");
         goto err_data_alloc;
     }
+
     pr_debug("blinktreeinterface_node_insert => 2\n");
     memset(db->data,0,NODE_ALLOC_SIZE); /*clear data*/
     pr_debug("blinktreeinterface_node_insert => 3\n");
@@ -130,6 +204,10 @@ err_data_alloc:
  */
 int blinktree_treeinterface_init(struct treeinterface *ti)
 {
+    if (prealloc_disk(1500)) {
+        pr_debug("blinktree_treeinterface_init: failed to preallocate disk.\n");
+        return 1;
+    }
     ti->tree_create = blinktree_create;
     ti->tree_remove = blinktree_remove;
 
@@ -139,4 +217,8 @@ int blinktree_treeinterface_init(struct treeinterface *ti)
     ti->node_read = blinktreeinterface_node_read;
     ti->node_write = blinktreeinterface_node_write;
     return 0;
+}
+
+void blinktree_treeinterface_exit(void) {
+    dealloc_disk(blocks);
 }
