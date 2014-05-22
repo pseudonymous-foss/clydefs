@@ -6,6 +6,7 @@
 #include "chunk.h"
 #include "inode.h"
 #include "sysfs.h"
+#include "pagecache.h"
 
 /* 
     FIXME:
@@ -40,6 +41,11 @@ static int __init clydefs_init(void)
     if (retval)
         goto err;
 
+    /*init page cache module */
+    cfspc_init();
+    if (retval)
+        goto err_pagecache_init;
+
     /*init chunk module*/
     retval = cfsc_init();
     if (retval)
@@ -69,6 +75,8 @@ err_super_init:
 err_inode_init:
     cfsc_exit();
 err_chunk_init:
+    cfspc_exit();
+err_pagecache_init:
     cfsio_exit();
 err:
     return retval;
@@ -80,6 +88,7 @@ static void __exit clydefs_exit(void)
     super_exit();
     cfsi_exit();
     cfsc_exit();
+    cfspc_exit();
     cfsio_exit();
 }
 

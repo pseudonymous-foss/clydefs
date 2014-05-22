@@ -1,5 +1,6 @@
 #include <linux/fs.h>
 #include <linux/mm.h>
+#include <linux/slab.h>
 #include <linux/pagemap.h>
 #include "clydefs.h"
 #include "inode.h"
@@ -8,11 +9,97 @@
 
 //#define CFS_DBGMSG(...) do {} while (0)
 #define CFS_DBGMSG(...) printk(__VA_ARGS__)
+#define CFS_ERR(...) printk(__VA_ARGS__)
+#define PAGE_NDX_UNSET -1
 
 typedef enum {
     RT_PAGE_READ,
     RT_PAGE_RWU,
 } read_type_t;
+
+
+
+struct page_segment {
+    struct inode *host;
+    // -- expected in that unless WB_SYNC_ALL, not all pages
+    // in the range are guaranteed to be written
+    unsigned int expected_pages;
+
+    /*the array of pages this collection encompasses*/
+    struct page **pages;            
+    unsigned int pages_len;         /*number of pages in arr*/
+    unsigned int pages_capacity;    /*size of array*/
+
+    loff_t first_page_ndx;          /*index of first page in segment*/
+
+    u64 length;                     /*length of this entire segment*/
+};
+
+/*Caches*/
+static struct kmem_cache *cfspc_pgseg_pool = NULL;
+
+const struct address_space_operations cfs_aops;
+
+/** 
+ * Initialises page collection structure which itself will 
+ * describe a range of pages within the inode 'host' to be 
+ * written. 
+ * @param pgseg the page segment structure itself 
+ * @param expected_pages the number of pages covered by the 
+ *                       range which in principle can be part of
+ *                       this collection. (WB_SYNC_NONE may
+ *                       reduce the actual set)
+ * @param host the inode/file which owns these pages
+ */
+static void pgseg_init(struct page_segment *pgseg, 
+                      unsigned int expected_pages, struct inode *host){
+    pgseg->host = host;
+    pgseg->expected_pages = expected_pages;
+    
+    pgseg->pages = NULL;
+    pgseg->pages_len = 0;
+    pgseg->pages_capacity = 0;
+
+    pgseg->first_page_ndx = PAGE_NDX_UNSET;
+}
+
+static int pgseg_page_alloc(struct page_segment *pgseg)
+{
+	unsigned int pages = pgseg->expected_pages;
+
+    /*try halving allocation requests at each step 
+      until success or complete failure*/
+	for (; pages; pages >>= 1) {
+		pgseg->pages = kmalloc(pages * sizeof(struct page *), GFP_KERNEL);
+		if (likely(pgseg->pages)) {
+            pgseg->pages_capacity = pages;
+			return 0;
+		}
+	}
+    CFS_ERR(
+        "Failed to allocate *any* pages for page collection (ino: 0x%lx)\n", 
+        pgseg->host->i_ino
+    );
+	return -ENOMEM;
+}
+
+static __always_inline int pgseg_addpage(
+    struct page_segment *pgseg, struct page *page, unsigned int len)
+{
+    if (unlikely(pgseg->pages_len == pgseg->pages_capacity)) {
+        return -ENOMEM;
+    }
+
+    pgseg->pages[pgseg->pages_len++] = page;
+    pgseg->length += len;
+    return 0;
+}
+
+static __always_inline void pgseg_clean(struct page_segment *pgseg)
+{
+	kfree(pgseg->pages);
+	pgseg->pages = NULL;
+}
 
 /** 
  * Calculates number of bytes to read/write based on the 
@@ -342,10 +429,122 @@ out:
     return retval;
 }
 
+/** 
+ * instigate the writing of the supplied collection 
+ * @return 0 on success, error otherwise 
+ */ 
+static int write_segment(struct page_segment *pgseg)
+{
+    //copy off segment and adopt the page array
+    //increment pending_io var
+
+    //set some form of async handler on my cfsio_data_request to:
+    //  - free page array (and such, use pgseg_ fnc)
+    //  - unlock pages, clear the page writeback mark
+    // decrement pending_io var, 
+
+    return 111;
+}
+
+/** 
+ *  
+ * @param data the page collection struct - Resides on stack, 
+ *             MUST be copied off when a write is issued.
+ * @return 0 on success, error otherwise 
+ */ 
+static int bundle_page(struct page *page,
+			   struct writeback_control *wbc_unused, void *data)
+{
+    struct page_segment *pgseg = data;
+    struct inode *i = pgseg->host;
+    loff_t i_size = i_size_read(i);
+    pgoff_t end_index = i_size >> PAGE_CACHE_SHIFT;
+    u32 len;
+    int ret;
+
+    BUG_ON(!PageLocked(page));
+
+    /*FIXME: do I have some form of initialization wait-for-inode-creation stuff ?*/
+
+    /*unless it's the last page, we can safely write the entire page*/
+    if (page->index < end_index) {
+        len = PAGE_CACHE_SIZE;
+    } else {
+        len = i_size & ~PAGE_CACHE_MASK;
+
+        /*TODO: TRUNCATION CODE -- address later*/
+    }
+
+add_page:
+    if (unlikely(pgseg->first_page_ndx == PAGE_NDX_UNSET)) {
+        pgseg->first_page_ndx = page->index;
+    } else if (unlikely((pgseg->first_page_ndx + pgseg->pages_len) != page->index)) {
+        /*contiguity broken, exec request as is and queue up this page as the first 
+          of a new segment.*/
+        ret = write_segment(pgseg);
+        if (unlikely(ret)){
+            goto err;
+        }
+
+        CFS_DBGMSG(
+            "bundle_page(0x%lx, 0x%lx) contiguity broken, issued write\n",
+            i->i_ino, page->index
+        );
+
+        /*segment write issued, pgseg can model a new segment now.*/
+        goto add_page;
+    }
+
+    if (!pgseg->pages) {
+        /*allocate entries for page array*/
+        ret = pgseg_page_alloc(pgseg);
+        if (unlikely(ret)) {
+            goto err;
+        }
+    }
+
+    CFS_DBGMSG(
+        "bundle_page(0x%lx, 0x%lx) len=0x%x\n",
+        i->i_ino, page->index, len
+    );
+
+    ret = pgseg_addpage(pgseg, page, len); /*OOM, write segment now.*/
+    if (unlikely(ret)) {
+        CFS_DBGMSG(
+            "bundle_page - pgseg_addpage failed, pages_len=%u segment_length(bytes)=%llu\n",
+            pgseg->pages_len, pgseg->length
+        );
+
+        ret = write_segment(pgseg);
+        if (unlikely(ret)) {
+            CFS_DBGMSG("write_segment failed => %d\n", ret);
+            goto err;
+        }
+
+        /*segment write issued, pgseg can model a new segment now.*/
+        goto add_page; 
+    }
+
+    BUG_ON(PageWriteback(page));
+    set_page_writeback(page);
+
+    return 0;
+err:
+    CFS_DBGMSG(
+        "Err: bundle_page(0x%lx, 0x%lx) => %d\n",
+        i->i_ino, page->index, ret
+    );
+    set_bit(AS_EIO, &page->mapping->flags);
+    unlock_page(page);
+    return ret;
+}
+
 int cfsp_aopi_writepages(struct address_space *mapping,
 		       struct writeback_control *wbc)
 {
+    struct page_segment pgseg;
     loff_t start, end, expected_pages;
+    int ret;
 
     start = wbc->range_start >> PAGE_CACHE_SHIFT;
     end = (wbc->range_end == LLONG_MAX) ?
@@ -359,10 +558,39 @@ int cfsp_aopi_writepages(struct address_space *mapping,
 
     /*TODO: why did he ALWAYS set expected_pages to at *least* 32.. ?*/
     CFS_DBGMSG("inode(0x%lx) wbc->start=0x%llx wbc->end=0x%llx "
-               "nrpages=%lu start=0x%lx end=0x%lx expected_pages=%ld\n",
+               "nrpages=%lu start=0x%llx end=0x%llx expected_pages=%lld\n",
                mapping->host->i_ino, wbc->range_start, wbc->range_end,
                mapping->nrpages, start, end, expected_pages);
 
+    pgseg_init(&pgseg, expected_pages, mapping->host);
+
+    ret = write_cache_pages(mapping, wbc, bundle_page, &pgseg);
+	if (unlikely(ret)) {
+		CFS_ERR("write_cache_pages returned => %d\n", ret);
+		return ret;
+	}
+
+	ret = write_segment(&pgseg);
+	if (unlikely(ret))
+		return ret;
+
+	if (wbc->sync_mode == WB_SYNC_ALL) {
+        /*FS integrity write, ensure pages are written!*/
+		return write_segment(&pgseg);
+	} else if (pgseg.pages_len) {
+        /*non-integrity write. Let the leftover pages 
+          parttake in some subsequent write*/
+		unsigned i;
+
+		for (i = 0; i < pgseg.pages_len; i++) {
+			struct page *page = pgseg.pages[i];
+
+			end_page_writeback(page);
+			set_page_dirty(page);
+			unlock_page(page);
+		}
+	}
+	return 0;
 
     /*generic_writepages relies on .writepage*/
     return generic_writepages(mapping,wbc);
@@ -476,3 +704,56 @@ const struct address_space_operations cfs_aops = {
     .is_partially_uptodate = NULL,
     .error_remove_page = NULL,
 };
+
+/** 
+ * Initialise the segment cache. 
+ */ 
+static int __segmentcache_init(void)
+{
+	cfspc_pgseg_pool = kmem_cache_create(
+        "cfspc_pgseg_pool",
+		sizeof(struct cfs_inode),
+        0,
+        /*objects are reclaimable*/
+		SLAB_RECLAIM_ACCOUNT,
+        NULL
+    );
+
+	if (!cfspc_pgseg_pool)
+		return -ENOMEM;
+	return 0;
+}
+
+/** 
+ * Destroy the segment cache. 
+ * @note will wait until all rcu operations are finished. 
+ */ 
+static void __segmentcache_destroy(void)
+{
+	rcu_barrier();
+	kmem_cache_destroy(cfspc_pgseg_pool);
+}
+
+
+/** 
+ * Initialise page cache structures.
+ */ 
+int cfspc_init(void)
+{
+    int retval;
+
+    retval = __segmentcache_init();
+    if (retval)
+        goto err;
+
+    return 0; /*success*/
+err:
+    return retval;
+}
+
+void cfspc_exit(void)
+{
+    /*reverse order of pagecache_init*/
+    CFS_DBG("called\n");
+    __segmentcache_destroy();
+}
