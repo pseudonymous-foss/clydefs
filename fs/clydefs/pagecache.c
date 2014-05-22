@@ -5,14 +5,14 @@
 #include "inode.h"
 #include "pagecache.h"
 #include "io.h"
-/* FIXME :: inode's must point to these page cache functions */
+
+//#define CFS_DBGMSG(...) do {} while (0)
+#define CFS_DBGMSG(...) printk(__VA_ARGS__)
 
 typedef enum {
     RT_PAGE_READ,
     RT_PAGE_RWU,
 } read_type_t;
-
-
 
 /** 
  * Calculates number of bytes to read/write based on the 
@@ -342,6 +342,32 @@ out:
     return retval;
 }
 
+int cfsp_aopi_writepages(struct address_space *mapping,
+		       struct writeback_control *wbc)
+{
+    loff_t start, end, expected_pages;
+
+    start = wbc->range_start >> PAGE_CACHE_SHIFT;
+    end = (wbc->range_end == LLONG_MAX) ?
+        start + mapping->nrpages :
+        wbc->range_end >> PAGE_CACHE_SHIFT;
+
+    if (start || end )
+        expected_pages = end - start + 1;
+    else
+        expected_pages = mapping->nrpages;
+
+    /*TODO: why did he ALWAYS set expected_pages to at *least* 32.. ?*/
+    CFS_DBGMSG("inode(0x%lx) wbc->start=0x%llx wbc->end=0x%llx "
+               "nrpages=%lu start=0x%lx end=0x%lx expected_pages=%ld\n",
+               mapping->host->i_ino, wbc->range_start, wbc->range_end,
+               mapping->nrpages, start, end, expected_pages);
+
+
+    /*generic_writepages relies on .writepage*/
+    return generic_writepages(mapping,wbc);
+}
+
 /** 
  * @description after a write, this operation unlocks and 
  *              releases the page (decreasing its refcount) and
@@ -437,7 +463,7 @@ const struct address_space_operations cfs_aops = {
 
     /*mostly of interest to mmap'ed calls*/
     .writepage = cfsp_aopi_writepage,
-    .writepages = generic_writepages, /*relies on .writepage*/
+    .writepages = cfsp_aopi_writepages,
 
     /*.releasepage = cfsp_releasepage,*/ /*OPTIONAL, but see documentation for responsibilities if defined*/
     /*.set_page_dirty = cfsp_set_page_dirty,*/ /*OPTIONAL, but see documentation for responsibilities if defined*/
