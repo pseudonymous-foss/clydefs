@@ -522,7 +522,7 @@ static int cfsio_data_request(struct block_device *bd, enum AOE_CMD cmd, int rw,
     int retval = 0;
     struct bio *b;
     struct cfsio_rq *req = NULL;
-    u64 chunk_pages;
+    u64 chunk_pages, bio_off = offset, bio_len;
     struct tree_iface_data *b_td;
     u8 first_bio = 1;
     u8 *buffer_cur = buffer; /*ptr to what next page should contain*/
@@ -533,6 +533,7 @@ static int cfsio_data_request(struct block_device *bd, enum AOE_CMD cmd, int rw,
         /*need a trailing page which will contain less than a full page of data*/
         pages_left++;
     }
+
     CFS_DBG("buf size %llu bytes, => %llu pages of %lu bytes (trailing_bytes: %d)\n",
            len, pages_left, PAGE_SIZE, trailing_bytes);
 
@@ -548,6 +549,7 @@ static int cfsio_data_request(struct block_device *bd, enum AOE_CMD cmd, int rw,
 
 next_chunk:
     b = NULL; b_td = NULL;
+    bio_len = 0;
     chunk_pages = pages_left;
     if (chunk_pages > BIO_MAX_PAGES_PER_CHUNK) { /*FIXME; check this*/
         chunk_pages = BIO_MAX_PAGES_PER_CHUNK;
@@ -564,13 +566,6 @@ next_chunk:
     b->bi_bdev = bd;
     b->bi_end_io = fragment_end_io;
     b->bi_private = req;
-
-    b_td = (struct tree_iface_data *)b->bi_treecmd;
-    b_td->cmd = cmd;
-    b_td->tid = tid;
-    b_td->nid = nid;
-    b_td->off = offset;
-    b_td->len = len;
 
     if (first_bio) {
         first_bio = 0;
@@ -611,6 +606,7 @@ next_chunk:
         }
         CFS_DBG("\t\tbio_add_page called successfully (bio_page_size: %d)\n", bio_page_size);
 
+        bio_len += bio_page_size;
         buffer_cur += bio_page_size;
         chunk_pages--;
     }
@@ -619,6 +615,15 @@ next_chunk:
     if(unlikely(chunk_pages)) {
         pages_left += chunk_pages; /*didn't finish our chunk, return leftovers*/
     }
+
+    /*Knowing the size of the bio/fragment, update tree header fields*/
+    b_td = (struct tree_iface_data *)b->bi_treecmd;
+    b_td->cmd = cmd;
+    b_td->tid = tid;
+    b_td->nid = nid;
+    b_td->len = bio_len;
+    b_td->off = bio_off;
+    bio_off += bio_len; /*prepare for next chunk*/
     
     if(pages_left) {
         submit_bio(rw, b);
