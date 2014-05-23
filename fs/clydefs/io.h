@@ -4,6 +4,8 @@
 #include <linux/blkdev.h>
 #include <linux/tree.h>
 
+#include "pagecache.h"
+
 /*presently block size set corresponds to 512bytes*/
 #define BLOCK_SIZE_SHIFT 9
 #define BLOCK_SIZE_BYTES 1ul << BLOCK_SIZE_SHIFT
@@ -34,11 +36,6 @@ struct cfsio_rq_cb_data {
      */ 
     struct list_head lst;
     spinlock_t lst_lock;
-
-    /**supplied buffer, if any*/ 
-    void *buffer;
-    /**length of supplied data buffer */ 
-    u64 buffer_len;
 };
 
 /** 
@@ -69,5 +66,11 @@ int cfsio_read_node(struct block_device *bd, cfsio_on_endio_t on_complete, void 
 int cfsio_read_node_sync(struct block_device *bd, cfsio_on_endio_t on_complete, void *endio_cb_data, u64 tid, u64 nid, u64 offset, u64 len, void *buf);
 
 int cfsio_update_node_sync(struct block_device *bd, cfsio_on_endio_t on_complete, void *endio_cb_data, u64 tid, u64 nid, u64 offset, u64 len, void *buf);
+
+int cfsio_update_node_ps(
+    struct block_device *bd, struct page_segment *pgseg, 
+    cfsio_on_endio_t on_complete, void *endio_cb_data, 
+    u64 tid, u64 nid, u64 offset
+);
 
 #endif //__CLYDEFS_IO_H

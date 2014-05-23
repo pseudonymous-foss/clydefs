@@ -1,5 +1,5 @@
-#ifndef __CLYDEFS_GLOBAL_H
-#define __CLYDEFS_GLOBAL_H
+#ifndef __CLYDEFS_H
+#define __CLYDEFS_H
 
 #include <linux/fs.h>
 #include <linux/spinlock.h>
@@ -165,10 +165,12 @@ do {    if (x) break;                                                   \
                __FILE__, __func__, __LINE__, #x); dump_stack(); BUG();  \
 } while (0);
 
-#define CFS_DBG(fmt, a...) printk(KERN_DEBUG "cfs<%s>,%d -- " fmt, __FUNCTION__, __LINE__, ##a)
+#define CFS_DBG(fmt, a...) printk(KERN_DEBUG "cfs<%s>,%d DBG -- " fmt, __FUNCTION__, __LINE__, ##a)
 #else
 #define CLYDE_ASSERT(x)
 #define CFS_DBG(fmt, a...) 
 #endif
 
-#endif //__CLYDEFS_GLOBAL_H
+#define CFS_ERR(fmt, a...) printk(KERN_EMERG "cfs<%s>,%d FATAL -- " fmt, __FUNCTION__, __LINE__, ##a)
+
+#endif //__CLYDEFS_H

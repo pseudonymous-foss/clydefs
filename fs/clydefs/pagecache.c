@@ -9,31 +9,12 @@
 
 //#define CFS_DBGMSG(...) do {} while (0)
 #define CFS_DBGMSG(...) printk(__VA_ARGS__)
-#define CFS_ERR(...) printk(__VA_ARGS__)
 #define PAGE_NDX_UNSET -1
 
 typedef enum {
     RT_PAGE_READ,
     RT_PAGE_RWU,
 } read_type_t;
-
-
-
-struct page_segment {
-    struct inode *host;
-    // -- expected in that unless WB_SYNC_ALL, not all pages
-    // in the range are guaranteed to be written
-    unsigned int expected_pages;
-
-    /*the array of pages this collection encompasses*/
-    struct page **pages;            
-    unsigned int pages_len;         /*number of pages in arr*/
-    unsigned int pages_capacity;    /*size of array*/
-
-    loff_t first_page_ndx;          /*index of first page in segment*/
-
-    u64 length;                     /*length of this entire segment*/
-};
 
 /*Caches*/
 static struct kmem_cache *cfspc_pgseg_pool = NULL;
@@ -93,6 +74,26 @@ static __always_inline int pgseg_addpage(
     pgseg->pages[pgseg->pages_len++] = page;
     pgseg->length += len;
     return 0;
+}
+
+static struct page_segment *pgseg_adopt_segment(struct page_segment *pgseg)
+{
+    struct page_segment *npgseg = NULL;
+
+    CLYDE_ASSERT(pgseg != NULL);
+    CLYDE_ASSERT(cfspc_pgseg_pool != NULL);
+
+    npgseg = kmem_cache_alloc(cfspc_pgseg_pool, GFP_ATOMIC);
+	if (!npgseg) {
+        CFS_DBG("Failed to allocate new page segment struct.\n");
+		return NULL;
+    }
+    *npgseg = *pgseg;
+
+    pgseg->pages = NULL;
+    pgseg->pages_capacity = pgseg->pages_len = 0;
+
+    return npgseg;
 }
 
 static __always_inline void pgseg_clean(struct page_segment *pgseg)
@@ -274,7 +275,7 @@ static int cfs_write_begin(struct file *f, struct address_space *mapping, loff_t
         - allocate space if necessary
             [DONE] (not our problem)
         - [write updates parts of basic blocks]
-            read in these blocks to writeouts work as intended
+            read in these blocks so writeouts work as intended
         - return the locked page for the specified offset, in pagep
             [DONE] - relying on simple_write_begin
         - must be able to cope with short-writes
@@ -352,7 +353,7 @@ static int cfsp_aopi_write_begin(
     return cfs_write_begin(f,mapping,off,len,flags,pagep,fsdata);
 }
 
-
+#if 0
 /** 
  * @pre PG_Dirty has been cleared, PageLocked(p) => true 
  */ 
@@ -428,6 +429,31 @@ out:
     atomic_dec(&csb->pending_io_ops);
     return retval;
 }
+#endif
+
+/** 
+ * See 'cfsio_on_endio_t' for details 
+ */ 
+static void write_segment_done(struct cfsio_rq_cb_data *req_data, void *data, int error)
+{
+    struct page_segment *pgseg = data;
+    int i;
+
+    CLYDE_ASSERT(pgseg != NULL);
+    if(error) {
+        CFS_ERR("Cannot handle I/O errors at this level, presently\n");
+        BUG();
+    }
+
+    /*TODO Have a looksie @ writepage to see what we should do*/
+    for (i = 0; i < pgseg->pages_len; i++) {
+        end_page_writeback(pgseg->pages[i]);
+        unlock_page(pgseg->pages[i]);
+    }
+    //end_page_writeback against each page
+    pgseg_clean(pgseg);
+    kmem_cache_free(cfspc_pgseg_pool, pgseg);
+}
 
 /** 
  * instigate the writing of the supplied collection 
@@ -435,15 +461,49 @@ out:
  */ 
 static int write_segment(struct page_segment *pgseg)
 {
-    //copy off segment and adopt the page array
-    //increment pending_io var
+    //copy off segment and adopt the page array                     [DONE]
+    //increment pending_io var                                      [DONE]
 
     //set some form of async handler on my cfsio_data_request to:
     //  - free page array (and such, use pgseg_ fnc)
     //  - unlock pages, clear the page writeback mark
     // decrement pending_io var, 
 
-    return 111;
+    struct page_segment *npgseg = NULL;
+    struct inode *i = NULL;
+    struct cfs_inode *ci = NULL;
+    struct cfs_sb *csb = NULL;
+    struct block_device *bd = NULL;
+    u64 offset;
+
+    BUG_ON(pgseg->pages_len == 0); /*issuing writes on an empty segment is silly*/
+
+    npgseg = pgseg_adopt_segment(pgseg);
+    if (!npgseg) {
+        goto err_pgseg_alloc;
+    }
+
+    i = pgseg->host;
+    ci = CFS_INODE(i);
+    csb = CFS_SB(i->i_sb);
+    bd = i->i_sb->s_bdev;
+
+    atomic_inc(&csb->pending_io_ops);
+    
+    /*must determine the size of the last page, all others are assumed PAGE_SIZE*/
+    pgseg->page_last_size = (u32)(page_ndx_to_bytes(pgseg->pages[pgseg->pages_len-1]) & 0xFFFFFFFF);
+
+    offset = pgseg->pages[0]->index << PAGE_CACHE_SHIFT;
+
+    cfsio_update_node_ps(
+        bd, pgseg, 
+        write_segment_done, pgseg, 
+        ci->data.tid, ci->data.nid, offset
+    );
+
+    return 0;
+    err_pgseg_alloc:
+        return -ENOMEM;
 }
 
 /** 
@@ -690,7 +750,8 @@ const struct address_space_operations cfs_aops = {
     .write_end = cfsp_aopi_write_end,
 
     /*mostly of interest to mmap'ed calls*/
-    .writepage = cfsp_aopi_writepage,
+    //.writepage = cfsp_aopi_writepage,
+    .writepage = NULL,
     .writepages = cfsp_aopi_writepages,
 
     /*.releasepage = cfsp_releasepage,*/ /*OPTIONAL, but see documentation for responsibilities if defined*/

@@ -6,6 +6,7 @@
 #include <linux/tree.h>
 #include <linux/completion.h>
 
+#include "pagecache.h"
 #include "clydefs.h"
 #include "io.h"
 
@@ -85,9 +86,9 @@ static struct kmem_cache *cfsio_rq_pool = NULL;
 static struct bio_set *bio_pool = NULL;
 
 /*maximum number of pages*/
-#define BIO_MAX_PAGES_PER_CHUNK (BIO_MAX_SECTORS >> (PAGE_SHIFT - BLOCK_SIZE_SHIFT))
+#define BIO_MAX_PAGES_PER_CHUNK BIO_MAX_PAGES
 
-#define tbio_get_frag(b) container_of((b)->bi_treecmd, struct cfsio_rq_frag, td);
+#define tbio_get_frag(b) container_of((b)->bi_treecmd, struct cfsio_rq_frag, td)
 
 /* 
   several bio's do not send data apart from the tree 
@@ -506,6 +507,166 @@ out:
 err_alloc_bio:
     return retval;
 }
+
+static int cfsio_data_request_ps(struct block_device *bd, struct page_segment *pgseg,  
+                                 cfsio_on_endio_t on_complete, void *endio_cb_data, 
+                                 enum AOE_CMD cmd, int rw, u64 tid, u64 nid, u64 offset)
+{
+    struct bio *b;
+    struct cfsio_rq *req = NULL;
+    struct tree_iface_data *b_td;
+    
+    u8 first_bio = 1;
+    int retval;
+    int pages_ndx; /*indexing into pgseg->pages[] arr*/
+    u64 pages_chunk, pages_left, bio_off, bio_len;
+    u32 pages_used;    
+
+    CLYDE_ASSERT(bd != NULL);
+    CLYDE_ASSERT(pgseg != NULL);
+    CLYDE_ASSERT(pgseg->page_last_size); /*last page cannot be 0 bytes */
+
+    req = kmem_cache_zalloc(cfsio_rq_pool, GFP_ATOMIC);
+    if (!req) {
+        CFS_DBG("\t\tfailed to allocate request structure\n");
+        retval = -ENOMEM;
+        goto err_alloc_req;
+    }
+
+    pages_left = pgseg->pages_len;
+    bio_off = offset;
+
+next_chunk:
+    b = NULL;
+    bio_len = 0;
+    pages_used = 0;
+    pages_chunk = pages_left;
+
+    if (pages_chunk > BIO_MAX_PAGES_PER_CHUNK) {
+        pages_chunk = BIO_MAX_PAGES_PER_CHUNK;
+    }
+    CFS_DBG("chunk_pages: %llu\n", pages_chunk);
+    pages_left -= pages_chunk;
+    
+    b = __alloc_bio(TREE_BIO, pages_chunk); /*TODO scrutinize - can I get a bio w. less than 'chunk_pages' spaces back ?*/
+    if (!b) {
+        CFS_DBG("\t\tfailed to allocate tree bio\n");
+        retval = -ENOMEM;
+        goto err_alloc_bio; /*FIXME that will not work here, we don't know how many bio's we'll issue*/
+    }
+    b->bi_bdev = bd;
+    b->bi_end_io = fragment_end_io;
+    b->bi_private = req;
+
+    if (first_bio) {
+        first_bio = 0;
+
+        /*initialise request structure and add this bio as the first element*/
+        __cfsio_rq_init(req);
+        req->endio_cb = on_complete;
+        req->endio_cb_data = endio_cb_data;
+    }
+
+    while(pages_chunk){
+        int written;
+        u32 bio_page_size;
+
+        if (likely(pages_chunk > 1 || (pages_left)))
+            bio_page_size = PAGE_SIZE;
+        else {
+            /*last page of last chunk being written*/
+            bio_page_size = pgseg->page_last_size;
+        }
+
+        written = bio_add_page(
+            b, 
+            pgseg->pages[pages_ndx], 
+            (unsigned int) bio_page_size, 
+            0
+        );
+        if(unlikely(!written)) { /*add_page either succeeds or returns 0*/
+            /*can be due to device limitations, fire off bio now*/
+            CFS_DBG(
+                "%s - bio being broken up as last page add failed "
+                "(THIS WON'T WORK RIGHT! THINGS WILL BE COPIED OUT OF ORDER)\n", 
+                __FUNCTION__
+            );
+            BUG();
+            break;
+        }
+        CFS_DBG("\t\tbio_add_page called successfully (bio_page_size: %d)\n", bio_page_size);
+
+        pages_ndx++;
+        pages_chunk--;
+        bio_len += bio_page_size;
+    }
+    atomic_inc(&req->cb_data.bio_num);
+    if(unlikely(pages_chunk)) {
+        /*didn't finish our chunk, return leftovers*/
+        pages_left += pages_chunk;
+    }
+
+    /*Knowing the size of the bio/fragment, update tree header fields*/
+    b_td = (struct tree_iface_data *)b->bi_treecmd;
+    b_td->cmd = cmd;
+    b_td->tid = tid;
+    b_td->nid = nid;
+    b_td->len = bio_len;
+    b_td->off = bio_off;
+    bio_off += bio_len; /*prepare for next chunk*/
+    
+    if(pages_left) {
+        submit_bio(rw, b);
+        bio_put(b);
+        goto next_chunk;
+    } else {
+        atomic_set(&req->initialised, 1);           /*Allows the request handler to proceed*/
+        smp_mb();
+        submit_bio(rw, b);
+        bio_put(b);
+    }
+
+    return 0; /*success*/
+
+
+err_alloc_bio:
+    if(atomic_read(&req->cb_data.bio_num)){
+        CFS_ERR("Request failed halfway through being issued (bio alloc failed) - issued %d bio's\n",
+                atomic_read(&req->cb_data.bio_num));
+        BUG();  /*not supported yet*/
+    } else {
+        kmem_cache_free(cfsio_rq_pool, req);
+    }
+err_alloc_req:
+    return retval;
+}
+
+/** 
+ *  Update data in node.
+ *  
+ *  @param bd the block device to which the operation is issued
+ *  @param pgseg the page segment describing the data to write
+ *  @param on_complete function to call once all fragments of
+ *                     the command have completed.
+ *  @param optional additional data to supply callback.
+ *  @param tid the id of the tree containing the node
+ *  @param nid the id of the node to update
+ *  @param offset the offset, in bytes, to write the data
+ *  @description updates the node identified by nid in the tree
+ *               identified by tid by writing the supplied data
+ *               at the supplied offset in the node.
+ */
+int cfsio_update_node_ps(
+    struct block_device *bd, struct page_segment *pgseg, 
+    cfsio_on_endio_t on_complete, void *endio_cb_data, 
+    u64 tid, u64 nid, u64 offset) {
+
+    return cfsio_data_request_ps(
+        bd, pgseg, on_complete, endio_cb_data, 
+        AOECMD_UPDATENODE,WRITE,tid,nid,offset
+    );
+}
+
     
 /** 
  *  Issue a tree data request (read/update).
@@ -572,8 +733,6 @@ next_chunk:
 
         /*initialise request structure and add this bio as the first element*/
         __cfsio_rq_init(req);
-        req->cb_data.buffer = buffer;
-        req->cb_data.buffer_len = len;
         req->endio_cb = on_complete;
         req->endio_cb_data = endio_cb_data;
     }
@@ -636,7 +795,7 @@ next_chunk:
         bio_put(b);
     }
 
-err_alloc_bio:
+err_alloc_bio: /*BUG HERE - should dealloc the request iff no bio's have been sent.*/
 err_alloc_req:
     return retval;
 }
