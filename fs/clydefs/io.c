@@ -11,8 +11,8 @@
 #include "io.h"
 
 #include <linux/printk.h>
-#define CFS_DBGMSG(fmt, a...) printk("cfs<%s>,%d DBG -- " fmt, __FUNCTION__, __LINE__, ##a)
-//#define CFS_DBGMSG(fmt, a...) 
+//#define CFS_DBGMSG(fmt, a...) printk("cfs<%s>,%d DBG -- " fmt, __FUNCTION__, __LINE__, ##a)
+#define CFS_DBGMSG(fmt, a...) 
 
 /* 
     Status

@@ -8,8 +8,8 @@
 #include "io.h"
 
 //#define CFS_DBGMSG(...) do {} while (0)
-#define CFS_DBGMSG(fmt, a...) printk("cfs<%s>,%d DBG -- " fmt, __FUNCTION__, __LINE__, ##a)
-//#define CFS_DBGMSG(fmt, a...) 
+//#define CFS_DBGMSG(fmt, a...) printk("cfs<%s>,%d DBG -- " fmt, __FUNCTION__, __LINE__, ##a)
+#define CFS_DBGMSG(fmt, a...) 
 #define PAGE_NDX_UNSET -1
 
 typedef enum {
@@ -97,6 +97,7 @@ static struct page_segment *pgseg_adopt_segment(struct page_segment *pgseg)
 
     pgseg->pages = NULL;
     pgseg->pages_capacity = pgseg->pages_len = 0;
+    pgseg->first_page_ndx = PAGE_NDX_UNSET;
 
     return npgseg;
 }
@@ -454,7 +455,7 @@ static void write_segment_done(struct cfsio_rq_cb_data *req_data, void *data, in
     csb = CFS_SB(pgseg->host->i_sb);
     atomic_dec(&csb->pending_io_ops);
 
-    printk("write_segment_done called\n");
+    CFS_DBG("write_segment_done called\n");
 
     if(error) {
         CFS_ERR("Cannot handle I/O errors at this level, presently\n");
@@ -493,6 +494,7 @@ static int write_segment(struct page_segment *pgseg_src)
     struct cfs_sb *csb = NULL;
     struct block_device *bd = NULL;
     u64 offset;
+    int iter;
 
     if (pgseg_src->pages_len == 0){
         CFS_DBGMSG("requested to write empty page segment - ignoring.\n");
@@ -512,6 +514,10 @@ static int write_segment(struct page_segment *pgseg_src)
     bd = i->i_sb->s_bdev;
 
     atomic_inc(&csb->pending_io_ops);
+
+    for(iter=0; iter < pgseg->pages_len; iter++){
+        set_page_writeback(pgseg->pages[iter]);
+    }
     
     CFS_DBGMSG(
         "Determining size of last page, pgseg{pages_len: '%u', pages_capacity: '%u'}\n", 
@@ -725,8 +731,7 @@ static int cfsp_aopi_write_end(struct file *f, struct address_space *mapping,
     loff_t i_size = i->i_size; /*we hold i_mutex, so reading directly is ok*/
     int retval;
 
-    CFS_DBG("called\n");
-    printk("cfsp_aopi_write_end (ino: 0x%lx, page ndx: 0x%lx)\n", mapping->host->i_ino,p->index);
+    CFS_DBG("cfsp_aopi_write_end (ino: 0x%lx, page ndx: 0x%lx)\n", mapping->host->i_ino,p->index);
 
     /*will unlock & release the page (release=>refcount put operation), & update i_size*/
     retval = simple_write_end(f,mapping,off,len,copied,p,fsdata);
