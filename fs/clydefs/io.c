@@ -10,6 +10,10 @@
 #include "clydefs.h"
 #include "io.h"
 
+#include <linux/printk.h>
+#define CFS_DBGMSG(fmt, a...) printk("cfs<%s>,%d DBG -- " fmt, __FUNCTION__, __LINE__, ##a)
+//#define CFS_DBGMSG(fmt, a...) 
+
 /* 
     Status
  
@@ -244,7 +248,7 @@ static void __dealloc_bio(struct bio *b)
         b->bi_private = NULL;
     }
     CFS_DBG("%s -- bio->bio_cnt (get/put var): %d\n", __FUNCTION__, atomic_read(&b->bi_cnt));
-    CLYDE_ASSERT( atomic_read(&b->bi_cnt) == 1);
+    //CLYDE_ASSERT( atomic_read(&b->bi_cnt) == 1);
     bio_put(b);
 }
 
@@ -518,7 +522,7 @@ static int cfsio_data_request_ps(struct block_device *bd, struct page_segment *p
     
     u8 first_bio = 1;
     int retval;
-    int pages_ndx; /*indexing into pgseg->pages[] arr*/
+    int pages_ndx = 0; /*indexing into pgseg->pages[] arr*/
     u64 pages_chunk, pages_left, bio_off, bio_len;
     u32 pages_used;    
 
@@ -528,7 +532,7 @@ static int cfsio_data_request_ps(struct block_device *bd, struct page_segment *p
 
     req = kmem_cache_zalloc(cfsio_rq_pool, GFP_ATOMIC);
     if (!req) {
-        CFS_DBG("\t\tfailed to allocate request structure\n");
+        CFS_DBGMSG("\t\tfailed to allocate request structure\n");
         retval = -ENOMEM;
         goto err_alloc_req;
     }
@@ -545,12 +549,12 @@ next_chunk:
     if (pages_chunk > BIO_MAX_PAGES_PER_CHUNK) {
         pages_chunk = BIO_MAX_PAGES_PER_CHUNK;
     }
-    CFS_DBG("chunk_pages: %llu\n", pages_chunk);
+    CFS_DBGMSG("(chunk loop) chunk_pages: %llu\n", pages_chunk);
     pages_left -= pages_chunk;
     
     b = __alloc_bio(TREE_BIO, pages_chunk); /*TODO scrutinize - can I get a bio w. less than 'chunk_pages' spaces back ?*/
     if (!b) {
-        CFS_DBG("\t\tfailed to allocate tree bio\n");
+        CFS_DBGMSG("\t\tfailed to allocate tree bio\n");
         retval = -ENOMEM;
         goto err_alloc_bio; /*FIXME that will not work here, we don't know how many bio's we'll issue*/
     }
@@ -571,6 +575,7 @@ next_chunk:
         int written;
         u32 bio_page_size;
 
+        CFS_DBGMSG("\tadding page.. (pages_chunk: %lluas)\n", pages_chunk);
         if (likely(pages_chunk > 1 || (pages_left)))
             bio_page_size = PAGE_SIZE;
         else {
@@ -586,15 +591,15 @@ next_chunk:
         );
         if(unlikely(!written)) { /*add_page either succeeds or returns 0*/
             /*can be due to device limitations, fire off bio now*/
-            CFS_DBG(
+            CFS_DBGMSG(
                 "%s - bio being broken up as last page add failed "
-                "(THIS WON'T WORK RIGHT! THINGS WILL BE COPIED OUT OF ORDER)\n", 
+                /*"(THIS WON'T WORK RIGHT! THINGS WILL BE COPIED OUT OF ORDER)\n"*/, 
                 __FUNCTION__
             );
-            BUG();
+            /*BUG();*/
             break;
         }
-        CFS_DBG("\t\tbio_add_page called successfully (bio_page_size: %d)\n", bio_page_size);
+        CFS_DBGMSG("\t\tbio_add_page called successfully (bio_page_size: %d)\n", bio_page_size);
 
         pages_ndx++;
         pages_chunk--;
@@ -660,6 +665,9 @@ int cfsio_update_node_ps(
     struct block_device *bd, struct page_segment *pgseg, 
     cfsio_on_endio_t on_complete, void *endio_cb_data, 
     u64 tid, u64 nid, u64 offset) {
+
+    CLYDE_ASSERT(bd != NULL);
+    CLYDE_ASSERT(pgseg != NULL);
 
     return cfsio_data_request_ps(
         bd, pgseg, on_complete, endio_cb_data, 
